@@ -102,6 +102,8 @@
 ### Week 21-22: 完整測試
 
 - [x] 建立測試框架 (Runtime + Editor tests)
+- [x] GitHub Actions CI 自動建置 (Linux, macOS, Windows)
+- [x] GitHub Actions UPM 套件結構驗證
 - [ ] 單元測試覆蓋率 > 80%
 - [ ] 整合測試
 - [ ] 效能基準測試
@@ -114,6 +116,8 @@
 - [x] 效能優化指南 (`Documentation/PerformanceGuide.md`)
 - [x] 平台兼容性文件 (`Documentation/PlatformCompatibility.md`)
 - [x] 範例專案 stub (`Samples~/`)
+- [x] CHANGELOG.md
+- [x] UPM package.json 完整設定 (支援 git URL 安裝)
 - [ ] 版本 1.0 發布
 
 ---
@@ -123,10 +127,15 @@
 ```
 UNAudio/
 ├── .gitignore
+├── .github/
+│   └── workflows/
+│       ├── native-build.yml         ← CI: 原生庫建置 (Linux/macOS/Windows)
+│       └── upm-validation.yml       ← CI: UPM 套件結構驗證
+├── CHANGELOG.md                     ← 版本變更記錄
 ├── LICENSE
 ├── PLAN.md                          ← 本文件 (this file)
 ├── README.md                        ← 完整企劃書
-├── package.json                     ← UPM 套件定義
+├── package.json                     ← UPM 套件定義 (git URL 安裝)
 ├── Runtime/
 │   ├── com.lask3802.unaudio.asmdef
 │   ├── Scripts/
