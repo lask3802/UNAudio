@@ -17,6 +17,13 @@ class AudioMixer;
 class AudioOutput;
 
 /// Core audio engine - manages decoders, mixer, and platform output.
+///
+/// Thread safety model:
+/// - Main thread holds mutex_ for all source management (Load, Unload, Play, Stop, etc.)
+/// - Audio thread accesses sources via snapshotSources_ (a copy made under mutex_)
+/// - Individual source properties (volume, pan, loop, state) are atomic
+/// - Decoder access is confined to the audio thread after setup; main thread
+///   must not call decoder methods while source is playing
 class AudioEngine {
 public:
     static AudioEngine& Instance();
@@ -79,8 +86,12 @@ private:
         std::vector<uint8_t> audioData;
     };
 
-    // Helper: check if handle is valid
+    // Helper: check if handle is valid (caller must hold mutex_ or be on audio thread
+    // with a valid snapshot)
     bool isValidHandle(UNAudioSourceHandle handle) const;
+
+    // Publish a snapshot of sources_ for the audio thread to read safely
+    void updateSourceSnapshot();
 
     // Process commands from the command queue (audio thread)
     void processCommands();
@@ -98,6 +109,15 @@ private:
     std::atomic<float> peakLevel_{0.0f};
     UNAudioOutputConfig config_{};
     int32_t nextHandle_ = 0;
+
+    // Snapshot of source pointers for lock-free audio thread access.
+    // Updated under mutex_ whenever sources change, read by audio thread.
+    std::vector<AudioSource*> snapshotSources_;
+    std::mutex snapshotMutex_;
+
+    // Deferred unload: main thread marks handles here; audio callback
+    // cleans up on next tick to avoid destroying a source mid-decode.
+    std::vector<UNAudioSourceHandle> pendingUnloads_;
 
     una::CommandQueue commandQueue_;
     una::EventQueue eventQueue_;

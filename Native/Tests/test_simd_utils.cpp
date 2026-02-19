@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include "../Source/Core/SimdUtils.h"
+#include <cmath>
 
 TEST(Simd_Clear) {
     float buf[16];
@@ -44,6 +45,7 @@ TEST(Simd_PeakLevel_AllZero) {
 }
 
 TEST(Simd_StereoPan_Left) {
+    // Constant-power: pan=-1 => left_gain = sqrt(1.0) = 1.0, right_gain = sqrt(0.0) = 0.0
     float buf[8] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
     una::simd::apply_stereo_pan(buf, -1.0f, 4);
 
@@ -54,6 +56,7 @@ TEST(Simd_StereoPan_Left) {
 }
 
 TEST(Simd_StereoPan_Right) {
+    // Constant-power: pan=1 => left_gain = sqrt(0.0) = 0.0, right_gain = sqrt(1.0) = 1.0
     float buf[8] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
     una::simd::apply_stereo_pan(buf, 1.0f, 4);
 
@@ -62,11 +65,14 @@ TEST(Simd_StereoPan_Right) {
 }
 
 TEST(Simd_StereoPan_Center) {
+    // Constant-power: pan=0 => left_gain = sqrt(0.5) ≈ 0.7071, right_gain = sqrt(0.5) ≈ 0.7071
+    // This maintains constant power at center (L^2 + R^2 = 1.0)
     float buf[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     una::simd::apply_stereo_pan(buf, 0.0f, 2);
 
-    ASSERT_NEAR(buf[0], 1.0f, 0.0001f);
-    ASSERT_NEAR(buf[1], 1.0f, 0.0001f);
+    const float expected = std::sqrt(0.5f); // ~0.7071
+    ASSERT_NEAR(buf[0], expected, 0.001f);
+    ASSERT_NEAR(buf[1], expected, 0.001f);
 }
 
 TEST(Simd_Int16ToFloat) {

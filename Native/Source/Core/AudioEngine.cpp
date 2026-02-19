@@ -30,10 +30,20 @@ UNAudioResult AudioEngine::Initialize(const UNAudioOutputConfig& config) {
     mixer_ = std::make_unique<AudioMixer>();
     mixer_->SetMasterVolume(masterVolume_.load());
 
-    // Set up source callback for mixer to query source state
+    // Set up source callback for mixer to query source state.
+    // This lambda runs on the audio thread. It reads from snapshotSources_
+    // (a copy of raw pointers published under snapshotMutex_), so it never
+    // races with main-thread vector resizing or unique_ptr resets.
     mixer_->SetSourceCallback([this](UNAudioSourceHandle handle, MixSourceInfo& info) -> bool {
-        if (!isValidHandle(handle)) return false;
-        auto& src = sources_[handle];
+        std::vector<AudioSource*> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(snapshotMutex_);
+            snapshot = snapshotSources_;
+        }
+
+        if (handle < 0 || static_cast<size_t>(handle) >= snapshot.size())
+            return false;
+        auto* src = snapshot[handle];
         if (!src || !src->decoder) return false;
 
         info.decoder = src->decoder.get();
@@ -67,6 +77,13 @@ void AudioEngine::Shutdown() {
     mixer_.reset();
     frameAllocator_.reset();
     sources_.clear();
+
+    {
+        std::lock_guard<std::mutex> slock(snapshotMutex_);
+        snapshotSources_.clear();
+    }
+
+    pendingUnloads_.clear();
     nextHandle_ = 0;
     initialized_ = false;
 }
@@ -79,6 +96,15 @@ bool AudioEngine::isValidHandle(UNAudioSourceHandle handle) const {
     return handle >= 0 &&
            static_cast<size_t>(handle) < sources_.size() &&
            sources_[handle] != nullptr;
+}
+
+void AudioEngine::updateSourceSnapshot() {
+    // Must be called with mutex_ held.
+    std::lock_guard<std::mutex> slock(snapshotMutex_);
+    snapshotSources_.resize(sources_.size());
+    for (size_t i = 0; i < sources_.size(); ++i) {
+        snapshotSources_[i] = sources_[i].get();
+    }
 }
 
 // ── Source management ────────────────────────────────────────────
@@ -111,29 +137,15 @@ UNAudioSourceHandle AudioEngine::LoadAudio(const uint8_t* data, size_t size,
         }
     }
 
-    if (!decoder) {
-        // Try Vorbis
-        auto vorbis = std::make_unique<VorbisDecoder>();
-        if (vorbis->Open(source->audioData.data(), source->audioData.size())) {
-            decoder = std::move(vorbis);
-        }
-    }
-
-    if (!decoder) {
-        // Try MP3
-        auto mp3 = std::make_unique<MP3Decoder>();
-        if (mp3->Open(source->audioData.data(), source->audioData.size())) {
-            decoder = std::move(mp3);
-        }
-    }
-
-    if (!decoder) {
-        // Try FLAC
-        auto flac = std::make_unique<FLACDecoder>();
-        if (flac->Open(source->audioData.data(), source->audioData.size())) {
-            decoder = std::move(flac);
-        }
-    }
+    // Stub decoders (Vorbis, MP3, FLAC) currently return false from Open()
+    // and are intentionally excluded from the fallback chain until their
+    // underlying libraries are integrated. When ready, uncomment below:
+    //
+    // if (!decoder) {
+    //     auto vorbis = std::make_unique<VorbisDecoder>();
+    //     if (vorbis->Open(...)) decoder = std::move(vorbis);
+    // }
+    // ... same for MP3Decoder, FLACDecoder
 
     if (!decoder) {
         memoryBudget_.free_compressed(size);
@@ -158,6 +170,10 @@ UNAudioSourceHandle AudioEngine::LoadAudio(const uint8_t* data, size_t size,
     if (static_cast<size_t>(handle) >= sources_.size())
         sources_.resize(handle + 1);
     sources_[handle] = std::move(source);
+
+    // Publish updated snapshot for audio thread
+    updateSourceSnapshot();
+
     return handle;
 }
 
@@ -166,6 +182,9 @@ void AudioEngine::UnloadAudio(UNAudioSourceHandle handle) {
     if (isValidHandle(handle)) {
         auto& src = sources_[handle];
         if (src) {
+            // Stop playback immediately so audio thread won't decode further
+            src->state.store(UNAUDIO_STATE_STOPPED, std::memory_order_release);
+
             // Remove from mixer
             if (mixer_) mixer_->RemoveSource(handle);
 
@@ -173,6 +192,9 @@ void AudioEngine::UnloadAudio(UNAudioSourceHandle handle) {
             memoryBudget_.free_compressed(src->audioData.size());
         }
         sources_[handle].reset();
+
+        // Publish updated snapshot (nullptr for this slot)
+        updateSourceSnapshot();
     }
 }
 
@@ -187,9 +209,14 @@ UNAudioResult AudioEngine::Play(UNAudioSourceHandle handle) {
 
     UNAudioState prev = src->state.load(std::memory_order_relaxed);
 
-    // If stopped, seek to beginning
+    // If stopped, seek to beginning via command queue so the audio thread
+    // processes it safely (avoids concurrent Seek/Decode race).
     if (prev == UNAUDIO_STATE_STOPPED) {
-        src->decoder->Seek(0);
+        una::AudioCommand cmd;
+        cmd.type = una::AudioCommand::Type::Seek;
+        cmd.voice_id = handle;
+        cmd.param0 = 0.0f; // seek to frame 0
+        commandQueue_.try_push(cmd);
     }
 
     src->state = UNAUDIO_STATE_PLAYING;
@@ -214,8 +241,14 @@ UNAudioResult AudioEngine::Stop(UNAudioSourceHandle handle) {
     if (!isValidHandle(handle)) return UNAUDIO_ERROR_INVALID_PARAM;
 
     sources_[handle]->state = UNAUDIO_STATE_STOPPED;
+
+    // Defer seek to audio thread via command queue
     if (sources_[handle]->decoder) {
-        sources_[handle]->decoder->Seek(0);
+        una::AudioCommand cmd;
+        cmd.type = una::AudioCommand::Type::Seek;
+        cmd.voice_id = handle;
+        cmd.param0 = 0.0f;
+        commandQueue_.try_push(cmd);
     }
     if (mixer_) mixer_->RemoveSource(handle);
 
@@ -270,7 +303,13 @@ bool AudioEngine::Seek(UNAudioSourceHandle handle, int64_t frame) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!isValidHandle(handle) || !sources_[handle]->decoder)
         return false;
-    return sources_[handle]->decoder->Seek(frame);
+
+    // Defer seek to audio thread via command queue
+    una::AudioCommand cmd;
+    cmd.type = una::AudioCommand::Type::Seek;
+    cmd.voice_id = handle;
+    cmd.param0 = static_cast<float>(frame);
+    return commandQueue_.try_push(cmd);
 }
 
 // ── Engine-level ─────────────────────────────────────────────────
@@ -328,12 +367,21 @@ void AudioEngine::AudioCallback(float* outputBuffer, int frameCount, int channel
 }
 
 void AudioEngine::processCommands() {
+    // Take a local snapshot for safe source access
+    std::vector<AudioSource*> snapshot;
+    {
+        std::lock_guard<std::mutex> slock(snapshotMutex_);
+        snapshot = snapshotSources_;
+    }
+
     una::AudioCommand cmd;
     while (commandQueue_.try_pop(cmd)) {
-        if (!isValidHandle(cmd.voice_id)) continue;
+        if (cmd.voice_id < 0 ||
+            static_cast<size_t>(cmd.voice_id) >= snapshot.size() ||
+            !snapshot[cmd.voice_id])
+            continue;
 
-        auto& src = sources_[cmd.voice_id];
-        if (!src) continue;
+        auto* src = snapshot[cmd.voice_id];
 
         switch (cmd.type) {
             case una::AudioCommand::Type::SetVolume:
@@ -345,6 +393,11 @@ void AudioEngine::processCommands() {
             case una::AudioCommand::Type::SetLoop:
                 src->loop.store(cmd.param0 > 0.0f, std::memory_order_relaxed);
                 break;
+            case una::AudioCommand::Type::Seek:
+                if (src->decoder) {
+                    src->decoder->Seek(static_cast<int64_t>(cmd.param0));
+                }
+                break;
             default:
                 break;
         }
@@ -354,9 +407,18 @@ void AudioEngine::processCommands() {
 void AudioEngine::processFinishedVoices() {
     if (!mixer_) return;
 
+    // Take a local snapshot for safe source access
+    std::vector<AudioSource*> snapshot;
+    {
+        std::lock_guard<std::mutex> slock(snapshotMutex_);
+        snapshot = snapshotSources_;
+    }
+
     for (auto handle : mixer_->GetFinishedVoices()) {
-        if (isValidHandle(handle)) {
-            sources_[handle]->state.store(UNAUDIO_STATE_STOPPED,
+        if (handle >= 0 &&
+            static_cast<size_t>(handle) < snapshot.size() &&
+            snapshot[handle]) {
+            snapshot[handle]->state.store(UNAUDIO_STATE_STOPPED,
                                           std::memory_order_relaxed);
         }
         // Notify main thread

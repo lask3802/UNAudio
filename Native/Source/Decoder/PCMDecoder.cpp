@@ -57,7 +57,7 @@ bool PCMDecoder::Open(const uint8_t* data, size_t size) {
     if (!data || size == 0) return false;
     data_ = data;
     dataSize_ = size;
-    currentFrame_ = 0;
+    currentFrame_.store(0, std::memory_order_relaxed);
 
     // Try WAV format first
     if (parseWavHeader(data, size)) {
@@ -78,9 +78,10 @@ bool PCMDecoder::Open(const uint8_t* data, size_t size) {
 }
 
 int PCMDecoder::Decode(float* buffer, int frameCount) {
-    if (!pcmData_ || currentFrame_ >= totalFrames_) return 0;
+    const int64_t curFrame = currentFrame_.load(std::memory_order_relaxed);
+    if (!pcmData_ || curFrame >= totalFrames_) return 0;
 
-    int64_t framesAvailable = totalFrames_ - currentFrame_;
+    int64_t framesAvailable = totalFrames_ - curFrame;
     int framesToDecode = static_cast<int>(
         std::min(static_cast<int64_t>(frameCount), framesAvailable));
 
@@ -89,13 +90,13 @@ int PCMDecoder::Decode(float* buffer, int frameCount) {
 
     if (isFloat_ && format_.bitsPerSample == 32) {
         // 32-bit float PCM — direct copy
-        size_t byteOffset = static_cast<size_t>(currentFrame_) * format_.blockAlign;
+        size_t byteOffset = static_cast<size_t>(curFrame) * format_.blockAlign;
         const float* src = reinterpret_cast<const float*>(pcmData_ + byteOffset);
         std::memcpy(buffer, src, totalSamples * sizeof(float));
 
     } else if (!isFloat_ && format_.bitsPerSample == 16) {
         // 16-bit int PCM — convert to float
-        size_t byteOffset = static_cast<size_t>(currentFrame_) * format_.blockAlign;
+        size_t byteOffset = static_cast<size_t>(curFrame) * format_.blockAlign;
         const int16_t* src = reinterpret_cast<const int16_t*>(pcmData_ + byteOffset);
         constexpr float scale = 1.0f / 32768.0f;
         for (int i = 0; i < totalSamples; ++i)
@@ -103,7 +104,7 @@ int PCMDecoder::Decode(float* buffer, int frameCount) {
 
     } else if (!isFloat_ && format_.bitsPerSample == 24) {
         // 24-bit int PCM — convert to float
-        size_t byteOffset = static_cast<size_t>(currentFrame_) * format_.blockAlign;
+        size_t byteOffset = static_cast<size_t>(curFrame) * format_.blockAlign;
         const uint8_t* src = pcmData_ + byteOffset;
         constexpr float scale = 1.0f / 8388608.0f; // 2^23
         for (int i = 0; i < totalSamples; ++i) {
@@ -119,14 +120,14 @@ int PCMDecoder::Decode(float* buffer, int frameCount) {
         std::memset(buffer, 0, totalSamples * sizeof(float));
     }
 
-    currentFrame_ += framesToDecode;
+    currentFrame_.store(curFrame + framesToDecode, std::memory_order_relaxed);
     return framesToDecode;
 }
 
 bool PCMDecoder::Seek(int64_t frame) {
     if (frame < 0) frame = 0;
     if (frame > totalFrames_) frame = totalFrames_;
-    currentFrame_ = frame;
+    currentFrame_.store(frame, std::memory_order_relaxed);
     return true;
 }
 

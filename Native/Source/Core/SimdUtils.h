@@ -5,8 +5,9 @@
  * Cross-platform SIMD abstraction for audio hot paths.
  * Compile-time selects SSE2 / AVX2 / NEON / scalar fallback.
  *
- * All audio buffers must be 16-byte aligned (SSE) or 32-byte aligned (AVX2).
- * FrameAllocator guarantees this.
+ * Uses unaligned loads/stores so buffers from external callers
+ * (e.g. platform audio callbacks) do not require special alignment.
+ * FrameAllocator still provides aligned buffers for optimal throughput.
  */
 
 #include <cstddef>
@@ -42,9 +43,9 @@ inline void mix_add(float* dst, const float* src, float volume, int sample_count
     __m256 vol = _mm256_set1_ps(volume);
     int i = 0;
     for (; i + 8 <= sample_count; i += 8) {
-        __m256 s = _mm256_load_ps(src + i);
-        __m256 d = _mm256_load_ps(dst + i);
-        _mm256_store_ps(dst + i, _mm256_add_ps(d, _mm256_mul_ps(s, vol)));
+        __m256 s = _mm256_loadu_ps(src + i);
+        __m256 d = _mm256_loadu_ps(dst + i);
+        _mm256_storeu_ps(dst + i, _mm256_add_ps(d, _mm256_mul_ps(s, vol)));
     }
     for (; i < sample_count; ++i)
         dst[i] += src[i] * volume;
@@ -53,9 +54,9 @@ inline void mix_add(float* dst, const float* src, float volume, int sample_count
     __m128 vol = _mm_set1_ps(volume);
     int i = 0;
     for (; i + 4 <= sample_count; i += 4) {
-        __m128 s = _mm_load_ps(src + i);
-        __m128 d = _mm_load_ps(dst + i);
-        _mm_store_ps(dst + i, _mm_add_ps(d, _mm_mul_ps(s, vol)));
+        __m128 s = _mm_loadu_ps(src + i);
+        __m128 d = _mm_loadu_ps(dst + i);
+        _mm_storeu_ps(dst + i, _mm_add_ps(d, _mm_mul_ps(s, vol)));
     }
     for (; i < sample_count; ++i)
         dst[i] += src[i] * volume;
@@ -84,8 +85,8 @@ inline void apply_gain(float* buf, float volume, int sample_count)
     __m256 vol = _mm256_set1_ps(volume);
     int i = 0;
     for (; i + 8 <= sample_count; i += 8) {
-        __m256 d = _mm256_load_ps(buf + i);
-        _mm256_store_ps(buf + i, _mm256_mul_ps(d, vol));
+        __m256 d = _mm256_loadu_ps(buf + i);
+        _mm256_storeu_ps(buf + i, _mm256_mul_ps(d, vol));
     }
     for (; i < sample_count; ++i)
         buf[i] *= volume;
@@ -94,8 +95,8 @@ inline void apply_gain(float* buf, float volume, int sample_count)
     __m128 vol = _mm_set1_ps(volume);
     int i = 0;
     for (; i + 4 <= sample_count; i += 4) {
-        __m128 d = _mm_load_ps(buf + i);
-        _mm_store_ps(buf + i, _mm_mul_ps(d, vol));
+        __m128 d = _mm_loadu_ps(buf + i);
+        _mm_storeu_ps(buf + i, _mm_mul_ps(d, vol));
     }
     for (; i < sample_count; ++i)
         buf[i] *= volume;
@@ -127,7 +128,7 @@ inline float peak_level(const float* buf, int sample_count)
     __m128 vpeak = _mm_setzero_ps();
     int i = 0;
     for (; i + 4 <= sample_count; i += 4) {
-        __m128 v = _mm_load_ps(buf + i);
+        __m128 v = _mm_loadu_ps(buf + i);
         v = _mm_and_ps(v, sign_mask); // fabs
         vpeak = _mm_max_ps(vpeak, v);
     }
@@ -171,13 +172,13 @@ inline void clear(float* buf, int sample_count)
     std::memset(buf, 0, static_cast<size_t>(sample_count) * sizeof(float));
 }
 
-// --- Stereo pan: apply left/right gain ---
+// --- Stereo pan: constant-power panning using sqrt curve ---
 inline void apply_stereo_pan(float* buf, float pan, int frame_count)
 {
     // pan: -1.0 (full left) to 1.0 (full right)
-    // constant-power panning
-    float left_gain  = (pan <= 0.0f) ? 1.0f : (1.0f - pan);
-    float right_gain = (pan >= 0.0f) ? 1.0f : (1.0f + pan);
+    // Constant-power panning: maintains perceived loudness at center
+    float left_gain  = std::sqrt((1.0f - pan) * 0.5f);
+    float right_gain = std::sqrt((1.0f + pan) * 0.5f);
 
     for (int i = 0; i < frame_count; ++i) {
         buf[i * 2 + 0] *= left_gain;

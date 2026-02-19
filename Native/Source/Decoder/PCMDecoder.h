@@ -2,9 +2,15 @@
 #define UNAUDIO_PCM_DECODER_H
 
 #include "AudioDecoder.h"
+#include <atomic>
 
 /// Raw PCM decoder — handles uncompressed 16-bit and float PCM data.
 /// This is the simplest decoder, used for DecompressOnLoad clips and testing.
+///
+/// Thread safety: Seek() and Decode() use atomic currentFrame_ so they can be
+/// called from the audio thread while the main thread reads state. However,
+/// callers should prefer deferring Seek() to the audio thread via CommandQueue
+/// to avoid mid-decode position jumps.
 class PCMDecoder : public AudioDecoder {
 public:
     PCMDecoder();
@@ -22,7 +28,7 @@ private:
     const uint8_t* data_ = nullptr;
     size_t dataSize_ = 0;
     int64_t totalFrames_ = 0;
-    int64_t currentFrame_ = 0;
+    std::atomic<int64_t> currentFrame_{0};
     bool isFloat_ = false;
 
     // Simple WAV header parser
