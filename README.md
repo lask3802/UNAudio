@@ -187,7 +187,7 @@ public:
 ```gradle
 android {
     defaultConfig {
-        minSdkVersion 26  // AAudio 需求
+        minSdkVersion 26  // AAudio 推薦，OpenSL ES 支援 API 16+
         ndk {
             abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
         }
@@ -467,12 +467,12 @@ public:
         size_t size = ftell(file);
         fseek(file, 0, SEEK_SET);
         
-        uint8_t* buffer = new uint8_t[size];
-        fread(buffer, 1, size, file);
+        std::vector<uint8_t> buffer(size);
+        fread(buffer.data(), 1, size, file);
         fclose(file);
         
         // 解析音頻資料
-        return ParseAudioData(buffer, size);
+        return ParseAudioData(buffer.data(), size);
     }
 };
 ```
@@ -657,10 +657,12 @@ private:
     }
     
     uint32_t ReadUInt32(const std::vector<uint8_t>& data, size_t offset) {
+        if (offset + sizeof(uint32_t) > data.size()) return 0;
         return *reinterpret_cast<const uint32_t*>(&data[offset]);
     }
     
     uint64_t ReadUInt64(const std::vector<uint8_t>& data, size_t offset) {
+        if (offset + sizeof(uint64_t) > data.size()) return 0;
         return *reinterpret_cast<const uint64_t*>(&data[offset]);
     }
 };
@@ -687,7 +689,7 @@ public class UNAudioAssetBundleLoader
     }
     
     [DllImport("UNAudio")]
-    private static extern UNAudioClip CreateClipFromNative();
+    private static extern IntPtr CreateClipFromNative();  // 返回 IntPtr，需手動 Marshal
 }
 ```
 
