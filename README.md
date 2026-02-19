@@ -125,6 +125,226 @@ struct AudioOutputConfig {
 };
 ```
 
+#### 2.4 行動平台專屬實作 (Mobile Platform Implementations)
+
+##### Android 平台支援 (Android Platform Support)
+
+**音頻 API 選擇**:
+- **AAudio** (Android 8.0+ / API 26+): 推薦，最低延遲
+- **OpenSL ES** (Android 4.1+ / API 16+): 廣泛相容性支援
+
+**AAudio 實作**:
+```cpp
+class AAudioOutput {
+private:
+    AAudioStream* stream;
+    int32_t bufferSize;
+    
+public:
+    bool Initialize(int32_t sampleRate, int32_t channels) {
+        AAudioStreamBuilder* builder;
+        aaudio_result_t result = AAudio_createStreamBuilder(&builder);
+        
+        // 設定低延遲模式
+        AAudioStreamBuilder_setPerformanceMode(builder, 
+            AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+        
+        // 設定共享模式以獲得更好的兼容性
+        AAudioStreamBuilder_setSharingMode(builder, 
+            AAUDIO_SHARING_MODE_SHARED);
+        
+        AAudioStreamBuilder_setSampleRate(builder, sampleRate);
+        AAudioStreamBuilder_setChannelCount(builder, channels);
+        AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
+        AAudioStreamBuilder_setDataCallback(builder, DataCallback, this);
+        
+        result = AAudioStreamBuilder_openStream(builder, &stream);
+        AAudioStreamBuilder_delete(builder);
+        
+        return result == AAUDIO_OK;
+    }
+    
+    static aaudio_data_callback_result_t DataCallback(
+        AAudioStream* stream,
+        void* userData,
+        void* audioData,
+        int32_t numFrames) {
+        
+        AAudioOutput* output = static_cast<AAudioOutput*>(userData);
+        output->FillAudioBuffer((float*)audioData, numFrames);
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
+};
+```
+
+**Android 特性**:
+- 自動裝置選擇（耳機/揚聲器）
+- 低延遲音頻路徑偵測
+- 快速音訊緩衝大小調整
+- 音頻焦點管理 (AudioFocus)
+
+**Gradle 整合**:
+```gradle
+android {
+    defaultConfig {
+        minSdkVersion 26  // AAudio 需求
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+        }
+    }
+    
+    externalNativeBuild {
+        cmake {
+            path "CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.google.oboe:oboe:1.7.0'  // Optional: Oboe wrapper
+}
+```
+
+**延遲優化**:
+| 裝置類型 | 典型延遲 | 緩衝設定 |
+|---------|---------|---------|
+| 高階裝置 (Pixel, Galaxy S) | 10-15ms | 192 frames @ 48kHz |
+| 中階裝置 | 15-25ms | 256 frames @ 48kHz |
+| 低階裝置 | 25-40ms | 512 frames @ 48kHz |
+
+##### iOS 平台支援 (iOS Platform Support)
+
+**CoreAudio 實作**:
+```objc
+class CoreAudioOutput {
+private:
+    AudioUnit outputUnit;
+    AudioStreamBasicDescription audioFormat;
+    
+public:
+    bool Initialize(int sampleRate, int channels) {
+        // 設定音訊會話
+        AVAudioSession* session = [AVAudioSession sharedInstance];
+        NSError* error = nil;
+        
+        // 設定為低延遲播放模式
+        [session setCategory:AVAudioSessionCategoryPlayback
+                        mode:AVAudioSessionModeMeasurement
+                     options:AVAudioSessionCategoryOptionMixWithOthers
+                       error:&error];
+        
+        // 設定較小的緩衝區以降低延遲
+        [session setPreferredIOBufferDuration:0.005 error:&error];  // 5ms
+        [session setPreferredSampleRate:sampleRate error:&error];
+        [session setActive:YES error:&error];
+        
+        // 建立 Audio Unit
+        AudioComponentDescription desc;
+        desc.componentType = kAudioUnitType_Output;
+        desc.componentSubType = kAudioUnitSubType_RemoteIO;
+        desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+        desc.componentFlags = 0;
+        desc.componentFlagsMask = 0;
+        
+        AudioComponent component = AudioComponentFindNext(NULL, &desc);
+        AudioComponentInstanceNew(component, &outputUnit);
+        
+        // 設定音訊格式
+        audioFormat.mSampleRate = sampleRate;
+        audioFormat.mFormatID = kAudioFormatLinearPCM;
+        audioFormat.mFormatFlags = kAudioFormatFlagIsFloat | 
+                                   kAudioFormatFlagIsPacked;
+        audioFormat.mChannelsPerFrame = channels;
+        audioFormat.mFramesPerPacket = 1;
+        audioFormat.mBitsPerChannel = 32;
+        audioFormat.mBytesPerFrame = channels * sizeof(float);
+        audioFormat.mBytesPerPacket = audioFormat.mBytesPerFrame;
+        
+        AudioUnitSetProperty(outputUnit,
+                           kAudioUnitProperty_StreamFormat,
+                           kAudioUnitScope_Input,
+                           0,
+                           &audioFormat,
+                           sizeof(audioFormat));
+        
+        // 設定回調
+        AURenderCallbackStruct callback;
+        callback.inputProc = RenderCallback;
+        callback.inputProcRefCon = this;
+        
+        AudioUnitSetProperty(outputUnit,
+                           kAudioUnitProperty_SetRenderCallback,
+                           kAudioUnitScope_Input,
+                           0,
+                           &callback,
+                           sizeof(callback));
+        
+        AudioUnitInitialize(outputUnit);
+        AudioOutputUnitStart(outputUnit);
+        
+        return true;
+    }
+    
+    static OSStatus RenderCallback(void* inRefCon,
+                                   AudioUnitRenderActionFlags* ioActionFlags,
+                                   const AudioTimeStamp* inTimeStamp,
+                                   UInt32 inBusNumber,
+                                   UInt32 inNumberFrames,
+                                   AudioBufferList* ioData) {
+        
+        CoreAudioOutput* output = static_cast<CoreAudioOutput*>(inRefCon);
+        float* buffer = (float*)ioData->mBuffers[0].mData;
+        output->FillAudioBuffer(buffer, inNumberFrames);
+        return noErr;
+    }
+};
+```
+
+**iOS 特性**:
+- AVAudioSession 整合
+- 自動音訊中斷處理（來電、鬧鐘）
+- 藍牙裝置延遲補償
+- 空間音訊支援 (iOS 14+)
+- 背景音訊播放支援
+
+**Info.plist 配置**:
+```xml
+<key>UIBackgroundModes</key>
+<array>
+    <string>audio</string>
+</array>
+
+<key>AVAudioSessionCategory</key>
+<string>AVAudioSessionCategoryPlayback</string>
+```
+
+**延遲優化**:
+| 裝置 | 典型延遲 | 緩衝設定 |
+|------|---------|---------|
+| iPhone 13+ | 6-8ms | 128 frames @ 48kHz |
+| iPhone X-12 | 8-10ms | 256 frames @ 48kHz |
+| iPad Pro | 6-8ms | 128 frames @ 48kHz |
+| 舊款裝置 | 10-15ms | 256-512 frames @ 48kHz |
+
+**Metal 加速音訊處理 (選用)**:
+```objc
+// 使用 Metal Performance Shaders 進行音訊 DSP
+id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+id<MTLCommandQueue> commandQueue = [device newCommandQueue];
+
+// 使用 Metal 進行快速卷積、FFT 等運算
+MPSMatrixMultiplication* matrixMult = 
+    [[MPSMatrixMultiplication alloc] initWithDevice:device
+                                       transposeLeft:NO
+                                      transposeRight:NO
+                                          resultRows:rows
+                                       resultColumns:cols
+                                    interiorColumns:inner
+                                              alpha:1.0
+                                               beta:0.0];
+```
+
 ---
 
 ## Asset Pipeline 整合 (Asset Pipeline Integration)
@@ -137,12 +357,12 @@ public class UNAudioImporter : ScriptedImporter
 {
     public enum CompressionMode
     {
-        KeepOriginal,        // 保持原始壓縮格式
+        CompressedInMemory,  // 壓縮在記憶體中
         DecompressOnLoad,    // 載入時解壓
-        StreamFromDisk       // 串流播放
+        Streaming            // 串流播放
     }
     
-    public CompressionMode compressionMode = CompressionMode.KeepOriginal;
+    public CompressionMode compressionMode = CompressionMode.CompressedInMemory;
     public bool preloadAudioData = false;
     public bool loadInBackground = true;
     
@@ -211,6 +431,294 @@ public class UNAudioBuildProcessor : IPreprocessBuildWithReport
     }
 }
 ```
+
+### 4. 原生端資源讀取 (Native Asset Loading)
+
+**從原生代碼讀取 Unity 資源**，支援 AssetBundle 和檔案系統兩種方式。
+
+#### 4.1 從檔案系統讀取 (File System Loading)
+
+**C# 層準備資源路徑**:
+```csharp
+public class NativeAssetLoader
+{
+    [DllImport("UNAudio")]
+    private static extern bool LoadAudioFromFile(string path);
+    
+    public static bool LoadAudio(string assetPath)
+    {
+        // 轉換為絕對路徑
+        string fullPath = Path.Combine(Application.streamingAssetsPath, assetPath);
+        return LoadAudioFromFile(fullPath);
+    }
+}
+```
+
+**原生層實作**:
+```cpp
+// Native/Source/AssetLoader/FileLoader.h
+class FileAssetLoader {
+public:
+    bool LoadFromFile(const char* path) {
+        FILE* file = fopen(path, "rb");
+        if (!file) return false;
+        
+        fseek(file, 0, SEEK_END);
+        size_t size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+        
+        uint8_t* buffer = new uint8_t[size];
+        fread(buffer, 1, size, file);
+        fclose(file);
+        
+        // 解析音頻資料
+        return ParseAudioData(buffer, size);
+    }
+};
+```
+
+#### 4.2 從 AssetBundle 讀取 (AssetBundle Loading)
+
+Unity 6 的 AssetBundle 使用 LZ4 壓縮格式，需要解析 SerializedFile 格式。
+
+**參考 AssetStudio 開源專案**: https://github.com/Perfare/AssetStudio
+
+**AssetBundle 結構** (Unity 6):
+```
+AssetBundle File Format:
+┌─────────────────────────────────────┐
+│ Header                              │
+│  - Signature: "UnityFS"             │
+│  - Format Version: 6 or 7           │
+│  - Unity Version: "2023.x.x"        │
+│  - Bundle Size                      │
+├─────────────────────────────────────┤
+│ Blocks Info                         │
+│  - Uncompressed Size                │
+│  - Compressed Size                  │
+│  - Compression Type (LZ4/LZMA/None) │
+├─────────────────────────────────────┤
+│ Directory Info                      │
+│  - Asset Count                      │
+│  - Asset Entries[]                  │
+│    - Name                           │
+│    - Offset                         │
+│    - Size                           │
+├─────────────────────────────────────┤
+│ Asset Data (Compressed)             │
+│  - SerializedFile Data              │
+│  - Audio Clip Data                  │
+└─────────────────────────────────────┘
+```
+
+**AssetBundle 讀取器實作**:
+```cpp
+// Native/Source/AssetLoader/AssetBundleReader.h
+#include "lz4.h"  // LZ4 解壓縮庫
+
+class AssetBundleReader {
+private:
+    struct BundleHeader {
+        char signature[8];      // "UnityFS\0"
+        uint32_t formatVersion; // 6 or 7
+        char unityVersion[32];  // "2023.1.0f1"
+        char bundleVersion[32]; // "6.0.0"
+        uint64_t bundleSize;
+        uint32_t compressedBlocksInfoSize;
+        uint32_t uncompressedBlocksInfoSize;
+        uint32_t flags;
+    };
+    
+    struct BlockInfo {
+        uint32_t uncompressedSize;
+        uint32_t compressedSize;
+        uint16_t flags;  // 0=None, 1=LZMA, 2=LZ4, 3=LZ4HC
+    };
+    
+    struct AssetEntry {
+        uint64_t offset;
+        uint64_t size;
+        uint32_t typeID;  // 83 = AudioClip
+        char name[256];
+    };
+    
+public:
+    bool LoadBundle(const char* bundlePath) {
+        FILE* file = fopen(bundlePath, "rb");
+        if (!file) return false;
+        
+        // 1. 讀取 Header
+        BundleHeader header;
+        fread(&header, sizeof(BundleHeader), 1, file);
+        
+        if (strncmp(header.signature, "UnityFS", 7) != 0) {
+            fclose(file);
+            return false;
+        }
+        
+        // 2. 讀取並解壓 BlocksInfo
+        std::vector<uint8_t> compressedBlocksInfo(header.compressedBlocksInfoSize);
+        fread(compressedBlocksInfo.data(), 1, header.compressedBlocksInfoSize, file);
+        
+        std::vector<uint8_t> blocksInfo(header.uncompressedBlocksInfoSize);
+        LZ4_decompress_safe(
+            (char*)compressedBlocksInfo.data(),
+            (char*)blocksInfo.data(),
+            header.compressedBlocksInfoSize,
+            header.uncompressedBlocksInfoSize
+        );
+        
+        // 3. 解析 Blocks
+        std::vector<BlockInfo> blocks = ParseBlocksInfo(blocksInfo);
+        
+        // 4. 讀取並解壓所有 Blocks
+        std::vector<uint8_t> assetData;
+        for (const auto& block : blocks) {
+            std::vector<uint8_t> compressedBlock(block.compressedSize);
+            fread(compressedBlock.data(), 1, block.compressedSize, file);
+            
+            std::vector<uint8_t> uncompressedBlock(block.uncompressedSize);
+            
+            if (block.flags == 2 || block.flags == 3) {  // LZ4 or LZ4HC
+                LZ4_decompress_safe(
+                    (char*)compressedBlock.data(),
+                    (char*)uncompressedBlock.data(),
+                    block.compressedSize,
+                    block.uncompressedSize
+                );
+            } else {
+                // No compression
+                memcpy(uncompressedBlock.data(), compressedBlock.data(), 
+                       block.compressedSize);
+            }
+            
+            assetData.insert(assetData.end(), 
+                           uncompressedBlock.begin(), 
+                           uncompressedBlock.end());
+        }
+        
+        fclose(file);
+        
+        // 5. 解析 SerializedFile 並提取 AudioClip
+        return ParseSerializedFile(assetData);
+    }
+    
+private:
+    bool ParseSerializedFile(const std::vector<uint8_t>& data) {
+        // Unity SerializedFile 格式解析
+        // 參考: https://github.com/Perfare/AssetStudio/blob/master/AssetStudio/SerializedFile.cs
+        
+        size_t offset = 0;
+        
+        // SerializedFile Header
+        uint32_t metadataSize = ReadUInt32(data, offset);
+        uint32_t fileSize = ReadUInt32(data, offset + 4);
+        uint32_t version = ReadUInt32(data, offset + 8);
+        uint32_t dataOffset = ReadUInt32(data, offset + 12);
+        
+        // 跳到 Type Tree
+        offset += 20;
+        
+        // 讀取 Objects
+        uint32_t objectCount = ReadUInt32(data, offset);
+        offset += 4;
+        
+        for (uint32_t i = 0; i < objectCount; i++) {
+            uint64_t pathID = ReadUInt64(data, offset);
+            uint32_t byteStart = ReadUInt32(data, offset + 8);
+            uint32_t byteSize = ReadUInt32(data, offset + 12);
+            uint32_t typeID = ReadUInt32(data, offset + 16);
+            
+            // TypeID 83 = AudioClip
+            if (typeID == 83) {
+                ExtractAudioClip(data, dataOffset + byteStart, byteSize);
+            }
+            
+            offset += 20;
+        }
+        
+        return true;
+    }
+    
+    void ExtractAudioClip(const std::vector<uint8_t>& data, 
+                         size_t offset, 
+                         size_t size) {
+        // AudioClip 結構（簡化版）
+        // - m_Name: string
+        // - m_LoadType: int (0=Decompress, 1=Compressed, 2=Streaming)
+        // - m_Channels: int
+        // - m_Frequency: int
+        // - m_BitsPerSample: int
+        // - m_Length: float
+        // - m_AudioData: byte[]
+        
+        // 解析並載入音頻資料
+        // ...
+    }
+    
+    uint32_t ReadUInt32(const std::vector<uint8_t>& data, size_t offset) {
+        return *reinterpret_cast<const uint32_t*>(&data[offset]);
+    }
+    
+    uint64_t ReadUInt64(const std::vector<uint8_t>& data, size_t offset) {
+        return *reinterpret_cast<const uint64_t*>(&data[offset]);
+    }
+};
+```
+
+**C# 整合**:
+```csharp
+public class UNAudioAssetBundleLoader
+{
+    [DllImport("UNAudio")]
+    private static extern bool LoadAudioFromBundle(string bundlePath, string assetName);
+    
+    [DllImport("UNAudio")]
+    private static extern void UnloadBundle();
+    
+    public static UNAudioClip LoadFromBundle(string bundlePath, string clipName)
+    {
+        if (LoadAudioFromBundle(bundlePath, clipName))
+        {
+            // 從原生層取得音頻資料並建立 UNAudioClip
+            return CreateClipFromNative();
+        }
+        return null;
+    }
+    
+    [DllImport("UNAudio")]
+    private static extern UNAudioClip CreateClipFromNative();
+}
+```
+
+**CMakeLists.txt 增加 LZ4 依賴**:
+```cmake
+# 添加 LZ4 庫
+add_subdirectory(ThirdParty/lz4)
+
+target_link_libraries(UNAudio
+    PRIVATE
+        lz4
+        # ... other libraries
+)
+```
+
+**使用範例**:
+```csharp
+// 從檔案系統載入
+NativeAssetLoader.LoadAudio("audio/background.mp3");
+
+// 從 AssetBundle 載入
+var clip = UNAudioAssetBundleLoader.LoadFromBundle(
+    "bundles/audio.bundle",
+    "background_music"
+);
+```
+
+**參考資源**:
+- AssetStudio: https://github.com/Perfare/AssetStudio
+- Unity AssetBundle 文件: https://docs.unity3d.com/Manual/AssetBundlesIntro.html
+- LZ4 壓縮庫: https://github.com/lz4/lz4
 
 ---
 
@@ -663,8 +1171,6 @@ public:
 - [ ] 使用教學
 - [ ] 範例專案
 - [ ] 效能優化指南
-
-**Week 25: 發布準備**
 - [ ] 版本 1.0 發布
 - [ ] 發布到 Unity Asset Store
 - [ ] 發布到 GitHub
@@ -735,6 +1241,8 @@ public class AudioPlayer : MonoBehaviour
 ```csharp
 public class SpatialAudioExample : MonoBehaviour
 {
+    public UNAudioClip audioClip;
+    
     void Start()
     {
         var source = gameObject.AddComponent<UNAudioSource>();
@@ -793,6 +1301,7 @@ public class AudioManager : MonoBehaviour
 ```csharp
 public class MusicMixer : MonoBehaviour
 {
+    public UNAudioClip[] musicClips;
     private UNAudioSource[] musicTracks;
     
     void Start()
