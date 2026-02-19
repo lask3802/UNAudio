@@ -17,12 +17,13 @@ namespace una {
 class FrameAllocator {
 public:
     explicit FrameAllocator(size_t capacity)
-        : capacity_(capacity), offset_(0)
+        : capacity_((capacity + ARENA_ALIGN - 1) & ~(ARENA_ALIGN - 1)), offset_(0)
     {
+        // std::aligned_alloc requires size to be a multiple of alignment
 #if defined(_MSC_VER)
-        base_ = static_cast<uint8_t*>(_aligned_malloc(capacity, ARENA_ALIGN));
+        base_ = static_cast<uint8_t*>(_aligned_malloc(capacity_, ARENA_ALIGN));
 #else
-        base_ = static_cast<uint8_t*>(std::aligned_alloc(ARENA_ALIGN, capacity));
+        base_ = static_cast<uint8_t*>(std::aligned_alloc(ARENA_ALIGN, capacity_));
 #endif
         assert(base_ && "FrameAllocator: allocation failed");
     }

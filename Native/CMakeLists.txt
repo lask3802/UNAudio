@@ -112,7 +112,9 @@ if(UNAUDIO_BUILD_TESTS)
         Source/Platform
     )
 
-    # Force scalar SIMD for predictable test results on CI
+    # Force scalar SIMD for predictable test results on CI.
+    # To also exercise SSE2/AVX2/NEON paths, build a second target
+    # without UNA_FORCE_SCALAR (see Native/Tests/README for details).
     target_compile_definitions(UNAudioTests PRIVATE UNA_FORCE_SCALAR)
 
     add_test(NAME UNAudioTests COMMAND UNAudioTests)

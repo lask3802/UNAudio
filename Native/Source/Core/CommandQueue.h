@@ -30,9 +30,10 @@ struct AudioCommand {
 
     Type     type          = Noop;
     int32_t  voice_id      = -1;
-    float    param0        = 0.0f;  // volume / pitch / pan / seek_seconds
+    float    param0        = 0.0f;  // primary scalar: volume / pitch / pan
     float    param1        = 0.0f;  // fade target
     float    duration      = 0.0f;  // fade duration in seconds
+    int64_t  seek_frame    = 0;     // Seek: target frame index (avoids float precision loss)
     uint64_t schedule_sample = 0;   // 0 = immediate, >0 = absolute sample position
 };
 

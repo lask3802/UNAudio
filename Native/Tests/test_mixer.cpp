@@ -6,8 +6,7 @@
 #include <vector>
 
 // Helper: create a simple WAV with a DC signal at a given amplitude
-static std::vector<uint8_t> make_dc_wav(int numFrames, float amplitude) {
-    const int channels = 2;
+static std::vector<uint8_t> make_dc_wav(int numFrames, float amplitude, int channels = 2) {
     const int bps = 32;
     const int blockAlign = channels * (bps / 8);
     const int dataSize = numFrames * blockAlign;
@@ -68,7 +67,6 @@ TEST(Mixer_MasterVolume) {
     ASSERT_TRUE(decoder.Open(wav.data(), wav.size()));
 
     UNAudioSourceHandle handle = 1;
-    mixer.AddSource(handle);
 
     mixer.SetSourceCallback([&](UNAudioSourceHandle h, MixSourceInfo& info) -> bool {
         if (h != handle) return false;
@@ -81,7 +79,7 @@ TEST(Mixer_MasterVolume) {
     });
 
     float output[256] = {};
-    mixer.Process(output, 128, 2);
+    mixer.Process(output, 128, 2, handle + 1); // maxHandle = 2
 
     // 0.8 * 1.0 * 0.5 = 0.4
     ASSERT_NEAR(output[0], 0.4f, 0.001f);
@@ -97,7 +95,6 @@ TEST(Mixer_SourceVolume) {
     ASSERT_TRUE(decoder.Open(wav.data(), wav.size()));
 
     UNAudioSourceHandle handle = 0;
-    mixer.AddSource(handle);
 
     mixer.SetSourceCallback([&](UNAudioSourceHandle h, MixSourceInfo& info) -> bool {
         if (h != handle) return false;
@@ -110,7 +107,7 @@ TEST(Mixer_SourceVolume) {
     });
 
     float output[256] = {};
-    mixer.Process(output, 128, 2);
+    mixer.Process(output, 128, 2, handle + 1); // maxHandle = 1
 
     ASSERT_NEAR(output[0], 0.25f, 0.001f);
 }
@@ -124,7 +121,6 @@ TEST(Mixer_PeakLevel) {
     ASSERT_TRUE(decoder.Open(wav.data(), wav.size()));
 
     UNAudioSourceHandle handle = 0;
-    mixer.AddSource(handle);
 
     mixer.SetSourceCallback([&](UNAudioSourceHandle h, MixSourceInfo& info) -> bool {
         if (h != handle) return false;
@@ -137,7 +133,7 @@ TEST(Mixer_PeakLevel) {
     });
 
     float output[256] = {};
-    mixer.Process(output, 128, 2);
+    mixer.Process(output, 128, 2, handle + 1);
 
     ASSERT_NEAR(mixer.GetPeakLevel(), 0.75f, 0.001f);
 }
@@ -149,8 +145,7 @@ TEST(Mixer_FinishedVoice) {
     PCMDecoder decoder;
     ASSERT_TRUE(decoder.Open(wav.data(), wav.size()));
 
-    UNAudioSourceHandle handle = 42;
-    mixer.AddSource(handle);
+    UNAudioSourceHandle handle = 0;
 
     mixer.SetSourceCallback([&](UNAudioSourceHandle h, MixSourceInfo& info) -> bool {
         if (h != handle) return false;
@@ -163,12 +158,12 @@ TEST(Mixer_FinishedVoice) {
     });
 
     float output[128] = {};
-    mixer.Process(output, 64, 2);
-    ASSERT_TRUE(mixer.GetFinishedVoices().empty());
+    mixer.Process(output, 64, 2, handle + 1);
+    ASSERT_EQ(mixer.GetFinishedVoiceCount(), 0);
 
-    mixer.Process(output, 64, 2);
-    ASSERT_EQ(mixer.GetFinishedVoices().size(), 1u);
-    ASSERT_EQ(mixer.GetFinishedVoices()[0], 42);
+    mixer.Process(output, 64, 2, handle + 1);
+    ASSERT_EQ(mixer.GetFinishedVoiceCount(), 1);
+    ASSERT_EQ(mixer.GetFinishedVoices()[0], handle);
 }
 
 TEST(Mixer_WithFrameAllocator) {
@@ -180,7 +175,6 @@ TEST(Mixer_WithFrameAllocator) {
     ASSERT_TRUE(decoder.Open(wav.data(), wav.size()));
 
     UNAudioSourceHandle handle = 0;
-    mixer.AddSource(handle);
 
     mixer.SetSourceCallback([&](UNAudioSourceHandle h, MixSourceInfo& info) -> bool {
         if (h != handle) return false;
@@ -194,22 +188,57 @@ TEST(Mixer_WithFrameAllocator) {
 
     float output[256] = {};
     alloc.reset();
-    mixer.Process(output, 128, 2, &alloc);
+    mixer.Process(output, 128, 2, handle + 1, &alloc);
 
     ASSERT_TRUE(alloc.used() > 0u);
     ASSERT_NEAR(output[0], 0.5f, 0.001f);
 }
 
-TEST(Mixer_RemoveSource) {
+TEST(Mixer_SkipsInactiveSource) {
+    // Replaces the old RemoveSource test: callback returns false
+    // for a given handle, so it should be skipped.
     AudioMixer mixer;
 
-    UNAudioSourceHandle handle = 7;
-    mixer.AddSource(handle);
-    mixer.RemoveSource(handle);
+    UNAudioSourceHandle handle = 0;
+
+    mixer.SetSourceCallback([&](UNAudioSourceHandle, MixSourceInfo&) -> bool {
+        return false; // no sources active
+    });
 
     float output[64] = {};
-    mixer.Process(output, 32, 2);
+    mixer.Process(output, 32, 2, 1);
 
     for (int i = 0; i < 64; ++i)
         ASSERT_NEAR(output[i], 0.0f, 0.0001f);
+}
+
+TEST(Mixer_MonoToStereoUpmix) {
+    AudioMixer mixer;
+    mixer.SetMasterVolume(1.0f);
+
+    // Create a mono WAV (1 channel)
+    auto wav = make_dc_wav(128, 0.6f, 1);
+    PCMDecoder decoder;
+    ASSERT_TRUE(decoder.Open(wav.data(), wav.size()));
+
+    UNAudioSourceHandle handle = 0;
+
+    mixer.SetSourceCallback([&](UNAudioSourceHandle h, MixSourceInfo& info) -> bool {
+        if (h != handle) return false;
+        info.decoder = &decoder;
+        info.volume = 1.0f;
+        info.pan = 0.0f;
+        info.loop = false;
+        info.state = UNAUDIO_STATE_PLAYING;
+        return true;
+    });
+
+    float output[256] = {};
+    mixer.Process(output, 128, 2, handle + 1);
+
+    // Mono 0.6 should appear in both L and R channels
+    ASSERT_NEAR(output[0], 0.6f, 0.001f); // L
+    ASSERT_NEAR(output[1], 0.6f, 0.001f); // R
+    ASSERT_NEAR(output[2], 0.6f, 0.001f); // L
+    ASSERT_NEAR(output[3], 0.6f, 0.001f); // R
 }

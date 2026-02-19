@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
+#include <array>
 
 // Forward declarations
 class AudioDecoder;
@@ -20,10 +21,11 @@ class AudioOutput;
 ///
 /// Thread safety model:
 /// - Main thread holds mutex_ for all source management (Load, Unload, Play, Stop, etc.)
-/// - Audio thread accesses sources via snapshotSources_ (a copy made under mutex_)
+/// - Audio thread reads source pointers via lock-free published snapshot
+///   (RCU-style: main thread writes new snapshot, audio thread reads atomically)
 /// - Individual source properties (volume, pan, loop, state) are atomic
 /// - Decoder access is confined to the audio thread after setup; main thread
-///   must not call decoder methods while source is playing
+///   defers all decoder mutations (Seek) through the CommandQueue
 class AudioEngine {
 public:
     static AudioEngine& Instance();
@@ -68,6 +70,8 @@ public:
     // Memory budget
     una::MemoryUsage GetMemoryUsage() const;
 
+    static constexpr int MAX_SOURCES = 256;
+
 private:
     AudioEngine();
     ~AudioEngine();
@@ -86,12 +90,18 @@ private:
         std::vector<uint8_t> audioData;
     };
 
-    // Helper: check if handle is valid (caller must hold mutex_ or be on audio thread
-    // with a valid snapshot)
+    // Lock-free source snapshot for audio thread (RCU-style).
+    // Main thread publishes a new snapshot; audio thread reads atomically.
+    struct SourceSnapshot {
+        AudioSource* sources[MAX_SOURCES] = {};
+        int count = 0;
+    };
+
+    // Helper: check if handle is valid (caller must hold mutex_)
     bool isValidHandle(UNAudioSourceHandle handle) const;
 
-    // Publish a snapshot of sources_ for the audio thread to read safely
-    void updateSourceSnapshot();
+    // Publish a new snapshot for the audio thread (lock-free on reader side)
+    void publishSnapshot();
 
     // Process commands from the command queue (audio thread)
     void processCommands();
@@ -110,14 +120,10 @@ private:
     UNAudioOutputConfig config_{};
     int32_t nextHandle_ = 0;
 
-    // Snapshot of source pointers for lock-free audio thread access.
-    // Updated under mutex_ whenever sources change, read by audio thread.
-    std::vector<AudioSource*> snapshotSources_;
-    std::mutex snapshotMutex_;
-
-    // Deferred unload: main thread marks handles here; audio callback
-    // cleans up on next tick to avoid destroying a source mid-decode.
-    std::vector<UNAudioSourceHandle> pendingUnloads_;
+    // Double-buffered snapshots: main thread writes inactive, then flips.
+    // Audio thread reads active snapshot via atomic index — zero locks.
+    SourceSnapshot snapshots_[2];
+    std::atomic<int> activeSnapshot_{0};
 
     una::CommandQueue commandQueue_;
     una::EventQueue eventQueue_;

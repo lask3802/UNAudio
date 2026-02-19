@@ -86,6 +86,11 @@ public:
                u.decoded_percent    >= config_.warning_threshold;
     }
 
+    void reset() {
+        compressed_.store(0, std::memory_order_relaxed);
+        decoded_.store(0, std::memory_order_relaxed);
+    }
+
     const MemoryBudgetConfig& config() const { return config_; }
 
 private:

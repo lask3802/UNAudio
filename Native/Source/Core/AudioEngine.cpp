@@ -30,20 +30,14 @@ UNAudioResult AudioEngine::Initialize(const UNAudioOutputConfig& config) {
     mixer_ = std::make_unique<AudioMixer>();
     mixer_->SetMasterVolume(masterVolume_.load());
 
-    // Set up source callback for mixer to query source state.
-    // This lambda runs on the audio thread. It reads from snapshotSources_
-    // (a copy of raw pointers published under snapshotMutex_), so it never
-    // races with main-thread vector resizing or unique_ptr resets.
+    // Set up source callback: runs on audio thread, reads lock-free snapshot.
+    // No mutex, no allocation — just an atomic index load + pointer dereference.
     mixer_->SetSourceCallback([this](UNAudioSourceHandle handle, MixSourceInfo& info) -> bool {
-        std::vector<AudioSource*> snapshot;
-        {
-            std::lock_guard<std::mutex> lock(snapshotMutex_);
-            snapshot = snapshotSources_;
-        }
+        const SourceSnapshot& snap = snapshots_[activeSnapshot_.load(std::memory_order_acquire)];
 
-        if (handle < 0 || static_cast<size_t>(handle) >= snapshot.size())
+        if (handle < 0 || handle >= snap.count)
             return false;
-        auto* src = snapshot[handle];
+        auto* src = snap.sources[handle];
         if (!src || !src->decoder) return false;
 
         info.decoder = src->decoder.get();
@@ -78,12 +72,20 @@ void AudioEngine::Shutdown() {
     frameAllocator_.reset();
     sources_.clear();
 
-    {
-        std::lock_guard<std::mutex> slock(snapshotMutex_);
-        snapshotSources_.clear();
+    // Clear both snapshots
+    for (auto& snap : snapshots_) {
+        for (auto& s : snap.sources) s = nullptr;
+        snap.count = 0;
     }
+    activeSnapshot_.store(0, std::memory_order_relaxed);
 
-    pendingUnloads_.clear();
+    // Drain queues
+    { una::AudioCommand cmd; while (commandQueue_.try_pop(cmd)) {} }
+    { una::AudioEvent evt; while (eventQueue_.try_pop(evt)) {} }
+
+    // Reset memory budget
+    memoryBudget_.reset();
+
     nextHandle_ = 0;
     initialized_ = false;
 }
@@ -98,13 +100,24 @@ bool AudioEngine::isValidHandle(UNAudioSourceHandle handle) const {
            sources_[handle] != nullptr;
 }
 
-void AudioEngine::updateSourceSnapshot() {
+void AudioEngine::publishSnapshot() {
     // Must be called with mutex_ held.
-    std::lock_guard<std::mutex> slock(snapshotMutex_);
-    snapshotSources_.resize(sources_.size());
-    for (size_t i = 0; i < sources_.size(); ++i) {
-        snapshotSources_[i] = sources_[i].get();
+    // Write to the INACTIVE snapshot, then flip the atomic index so the
+    // audio thread picks it up on next read — zero locks on the reader.
+    int inactive = 1 - activeSnapshot_.load(std::memory_order_relaxed);
+    auto& snap = snapshots_[inactive];
+
+    int count = std::min(static_cast<int>(sources_.size()), MAX_SOURCES);
+    snap.count = count;
+    for (int i = 0; i < count; ++i) {
+        snap.sources[i] = sources_[i].get();
     }
+    for (int i = count; i < MAX_SOURCES; ++i) {
+        snap.sources[i] = nullptr;
+    }
+
+    // Publish: flip active index (release ensures writes above are visible)
+    activeSnapshot_.store(inactive, std::memory_order_release);
 }
 
 // ── Source management ────────────────────────────────────────────
@@ -115,6 +128,9 @@ UNAudioSourceHandle AudioEngine::LoadAudio(const uint8_t* data, size_t size,
     if (!data || size == 0) return -1;
 
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // Enforce source limit
+    if (nextHandle_ >= MAX_SOURCES) return -1;
 
     // Check memory budget
     if (!memoryBudget_.try_alloc_compressed(size)) {
@@ -139,13 +155,7 @@ UNAudioSourceHandle AudioEngine::LoadAudio(const uint8_t* data, size_t size,
 
     // Stub decoders (Vorbis, MP3, FLAC) currently return false from Open()
     // and are intentionally excluded from the fallback chain until their
-    // underlying libraries are integrated. When ready, uncomment below:
-    //
-    // if (!decoder) {
-    //     auto vorbis = std::make_unique<VorbisDecoder>();
-    //     if (vorbis->Open(...)) decoder = std::move(vorbis);
-    // }
-    // ... same for MP3Decoder, FLACDecoder
+    // underlying libraries are integrated.
 
     if (!decoder) {
         memoryBudget_.free_compressed(size);
@@ -172,7 +182,7 @@ UNAudioSourceHandle AudioEngine::LoadAudio(const uint8_t* data, size_t size,
     sources_[handle] = std::move(source);
 
     // Publish updated snapshot for audio thread
-    updateSourceSnapshot();
+    publishSnapshot();
 
     return handle;
 }
@@ -185,16 +195,13 @@ void AudioEngine::UnloadAudio(UNAudioSourceHandle handle) {
             // Stop playback immediately so audio thread won't decode further
             src->state.store(UNAUDIO_STATE_STOPPED, std::memory_order_release);
 
-            // Remove from mixer
-            if (mixer_) mixer_->RemoveSource(handle);
-
             // Free memory budget
             memoryBudget_.free_compressed(src->audioData.size());
         }
         sources_[handle].reset();
 
         // Publish updated snapshot (nullptr for this slot)
-        updateSourceSnapshot();
+        publishSnapshot();
     }
 }
 
@@ -215,16 +222,11 @@ UNAudioResult AudioEngine::Play(UNAudioSourceHandle handle) {
         una::AudioCommand cmd;
         cmd.type = una::AudioCommand::Type::Seek;
         cmd.voice_id = handle;
-        cmd.param0 = 0.0f; // seek to frame 0
+        cmd.seek_frame = 0;
         commandQueue_.try_push(cmd);
     }
 
     src->state = UNAUDIO_STATE_PLAYING;
-
-    // Register with mixer
-    if (mixer_) {
-        mixer_->AddSource(handle);
-    }
 
     return UNAUDIO_OK;
 }
@@ -247,10 +249,9 @@ UNAudioResult AudioEngine::Stop(UNAudioSourceHandle handle) {
         una::AudioCommand cmd;
         cmd.type = una::AudioCommand::Type::Seek;
         cmd.voice_id = handle;
-        cmd.param0 = 0.0f;
+        cmd.seek_frame = 0;
         commandQueue_.try_push(cmd);
     }
-    if (mixer_) mixer_->RemoveSource(handle);
 
     return UNAUDIO_OK;
 }
@@ -304,11 +305,11 @@ bool AudioEngine::Seek(UNAudioSourceHandle handle, int64_t frame) {
     if (!isValidHandle(handle) || !sources_[handle]->decoder)
         return false;
 
-    // Defer seek to audio thread via command queue
+    // Defer seek to audio thread via command queue (uses int64_t for precision)
     una::AudioCommand cmd;
     cmd.type = una::AudioCommand::Type::Seek;
     cmd.voice_id = handle;
-    cmd.param0 = static_cast<float>(frame);
+    cmd.seek_frame = frame;
     return commandQueue_.try_push(cmd);
 }
 
@@ -356,8 +357,11 @@ void AudioEngine::AudioCallback(float* outputBuffer, int frameCount, int channel
     // Process pending commands from main thread
     processCommands();
 
+    // Read snapshot count for mixer iteration bound (lock-free)
+    const SourceSnapshot& snap = snapshots_[activeSnapshot_.load(std::memory_order_acquire)];
+
     // Mix all active sources
-    mixer_->Process(outputBuffer, frameCount, channels, frameAllocator_.get());
+    mixer_->Process(outputBuffer, frameCount, channels, snap.count, frameAllocator_.get());
 
     // Update peak level for metering
     peakLevel_.store(mixer_->GetPeakLevel(), std::memory_order_relaxed);
@@ -367,21 +371,16 @@ void AudioEngine::AudioCallback(float* outputBuffer, int frameCount, int channel
 }
 
 void AudioEngine::processCommands() {
-    // Take a local snapshot for safe source access
-    std::vector<AudioSource*> snapshot;
-    {
-        std::lock_guard<std::mutex> slock(snapshotMutex_);
-        snapshot = snapshotSources_;
-    }
+    // Read active snapshot atomically (no lock, no allocation)
+    const SourceSnapshot& snap = snapshots_[activeSnapshot_.load(std::memory_order_acquire)];
 
     una::AudioCommand cmd;
     while (commandQueue_.try_pop(cmd)) {
-        if (cmd.voice_id < 0 ||
-            static_cast<size_t>(cmd.voice_id) >= snapshot.size() ||
-            !snapshot[cmd.voice_id])
+        if (cmd.voice_id < 0 || cmd.voice_id >= snap.count ||
+            !snap.sources[cmd.voice_id])
             continue;
 
-        auto* src = snapshot[cmd.voice_id];
+        auto* src = snap.sources[cmd.voice_id];
 
         switch (cmd.type) {
             case una::AudioCommand::Type::SetVolume:
@@ -395,7 +394,7 @@ void AudioEngine::processCommands() {
                 break;
             case una::AudioCommand::Type::Seek:
                 if (src->decoder) {
-                    src->decoder->Seek(static_cast<int64_t>(cmd.param0));
+                    src->decoder->Seek(cmd.seek_frame);
                 }
                 break;
             default:
@@ -407,19 +406,17 @@ void AudioEngine::processCommands() {
 void AudioEngine::processFinishedVoices() {
     if (!mixer_) return;
 
-    // Take a local snapshot for safe source access
-    std::vector<AudioSource*> snapshot;
-    {
-        std::lock_guard<std::mutex> slock(snapshotMutex_);
-        snapshot = snapshotSources_;
-    }
+    // Read active snapshot atomically (no lock, no allocation)
+    const SourceSnapshot& snap = snapshots_[activeSnapshot_.load(std::memory_order_acquire)];
 
-    for (auto handle : mixer_->GetFinishedVoices()) {
-        if (handle >= 0 &&
-            static_cast<size_t>(handle) < snapshot.size() &&
-            snapshot[handle]) {
-            snapshot[handle]->state.store(UNAUDIO_STATE_STOPPED,
-                                          std::memory_order_relaxed);
+    int count = mixer_->GetFinishedVoiceCount();
+    const UNAudioSourceHandle* voices = mixer_->GetFinishedVoices();
+
+    for (int i = 0; i < count; ++i) {
+        auto handle = voices[i];
+        if (handle >= 0 && handle < snap.count && snap.sources[handle]) {
+            snap.sources[handle]->state.store(UNAUDIO_STATE_STOPPED,
+                                              std::memory_order_relaxed);
         }
         // Notify main thread
         una::AudioEvent evt;

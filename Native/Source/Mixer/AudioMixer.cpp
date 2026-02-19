@@ -7,38 +7,19 @@
 AudioMixer::AudioMixer()  = default;
 AudioMixer::~AudioMixer() = default;
 
-void AudioMixer::AddSource(UNAudioSourceHandle source) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    activeSources_.push_back(source);
-}
-
-void AudioMixer::RemoveSource(UNAudioSourceHandle source) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    activeSources_.erase(
-        std::remove(activeSources_.begin(), activeSources_.end(), source),
-        activeSources_.end());
-}
-
 void AudioMixer::SetSourceCallback(MixSourceCallback callback) {
     sourceCallback_ = std::move(callback);
 }
 
 void AudioMixer::Process(float* outputBuffer, int frameCount, int channels,
-                         una::FrameAllocator* alloc) {
+                         int maxHandle, una::FrameAllocator* alloc) {
     const int totalSamples = frameCount * channels;
 
     // Clear output buffer (SIMD)
     una::simd::clear(outputBuffer, totalSamples);
-    finishedVoices_.clear();
+    finishedCount_ = 0;
 
-    // Snapshot active sources under lock
-    std::vector<UNAudioSourceHandle> sources;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        sources = activeSources_;
-    }
-
-    if (!sourceCallback_ || sources.empty()) {
+    if (!sourceCallback_ || maxHandle <= 0) {
         peakLevel_ = 0.0f;
         return;
     }
@@ -47,17 +28,23 @@ void AudioMixer::Process(float* outputBuffer, int frameCount, int channels,
     float* mixBuf = nullptr;
     if (alloc) {
         mixBuf = alloc->alloc_array<float>(totalSamples, 32);
-    } else {
+    }
+    if (!mixBuf) {
+        // Fallback to heap buffer (only if alloc failed or not provided)
         heapMixBuffer_.resize(totalSamples);
         mixBuf = heapMixBuffer_.data();
     }
 
     // Mix each active source
-    for (auto handle : sources) {
+    for (int handle = 0; handle < maxHandle; ++handle) {
         MixSourceInfo info{};
         if (!sourceCallback_(handle, info)) continue;
         if (info.state != UNAUDIO_STATE_PLAYING) continue;
         if (!info.decoder) continue;
+
+        // Determine source channel count for potential mono→stereo conversion
+        UNAudioFormat fmt = info.decoder->GetFormat();
+        int srcChannels = fmt.channels;
 
         // Decode audio into scratch buffer
         una::simd::clear(mixBuf, totalSamples);
@@ -70,12 +57,21 @@ void AudioMixer::Process(float* outputBuffer, int frameCount, int channels,
                 framesDecoded = info.decoder->Decode(mixBuf, frameCount);
             }
             if (framesDecoded <= 0) {
-                finishedVoices_.push_back(handle);
+                if (finishedCount_ < MAX_VOICES)
+                    finishedVoices_[finishedCount_++] = handle;
                 continue;
             }
         }
 
-        const int decodedSamples = framesDecoded * channels;
+        int decodedSamples = framesDecoded * channels;
+
+        // Mono→stereo upmix: duplicate each sample to L and R (backward for in-place safety)
+        if (srcChannels == 1 && channels == 2) {
+            for (int i = framesDecoded - 1; i >= 0; --i) {
+                mixBuf[i * 2 + 0] = mixBuf[i];
+                mixBuf[i * 2 + 1] = mixBuf[i];
+            }
+        }
 
         // Apply per-voice pan (stereo only)
         if (channels == 2 && info.pan != 0.0f) {
@@ -103,6 +99,10 @@ float AudioMixer::GetPeakLevel() const {
     return peakLevel_;
 }
 
-const std::vector<UNAudioSourceHandle>& AudioMixer::GetFinishedVoices() const {
+int AudioMixer::GetFinishedVoiceCount() const {
+    return finishedCount_;
+}
+
+const UNAudioSourceHandle* AudioMixer::GetFinishedVoices() const {
     return finishedVoices_;
 }

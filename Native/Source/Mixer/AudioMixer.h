@@ -4,7 +4,6 @@
 #include "../Core/AudioTypes.h"
 #include "../Core/FrameAllocator.h"
 #include <vector>
-#include <mutex>
 #include <cstdint>
 #include <functional>
 
@@ -22,32 +21,36 @@ struct MixSourceInfo {
 using MixSourceCallback = std::function<bool(UNAudioSourceHandle, MixSourceInfo&)>;
 
 /// Multi-track audio mixer with SIMD mixing path.
+/// Lock-free on the audio thread: no mutex, no heap allocation in Process().
+///
+/// The engine provides a maxHandle bound and a callback that returns source
+/// info for each handle.  Process() iterates [0..maxHandle), asks the
+/// callback, and mixes every source whose state is PLAYING.
 class AudioMixer {
 public:
+    static constexpr int MAX_VOICES = 256;
+
     AudioMixer();
     ~AudioMixer();
-
-    void AddSource(UNAudioSourceHandle source);
-    void RemoveSource(UNAudioSourceHandle source);
 
     /// Set callback to query source info from engine during Process().
     void SetSourceCallback(MixSourceCallback callback);
 
-    /// Mix all active sources into outputBuffer (interleaved float).
+    /// Mix sources [0..maxHandle) using callback to query each.
     /// Uses FrameAllocator for zero-alloc scratch buffers on audio thread.
     void Process(float* outputBuffer, int frameCount, int channels,
-                 una::FrameAllocator* alloc = nullptr);
+                 int maxHandle = 0, una::FrameAllocator* alloc = nullptr);
 
     void SetMasterVolume(float volume);
     float GetPeakLevel() const;
 
-    /// Get list of voices that finished during the last Process() call.
-    const std::vector<UNAudioSourceHandle>& GetFinishedVoices() const;
+    /// Get voices that finished during the last Process() call.
+    int GetFinishedVoiceCount() const;
+    const UNAudioSourceHandle* GetFinishedVoices() const;
 
 private:
-    std::vector<UNAudioSourceHandle> activeSources_;
-    std::vector<UNAudioSourceHandle> finishedVoices_;
-    std::mutex mutex_;
+    UNAudioSourceHandle finishedVoices_[MAX_VOICES];
+    int finishedCount_ = 0;
     float masterVolume_ = 1.0f;
     float peakLevel_    = 0.0f;
 

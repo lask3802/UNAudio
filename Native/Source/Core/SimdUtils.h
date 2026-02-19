@@ -150,7 +150,14 @@ inline float peak_level(const float* buf, int sample_count)
         v = vabsq_f32(v);
         vpeak = vmaxq_f32(vpeak, v);
     }
+    // vmaxvq_f32 is aarch64-only; use pairwise max for 32-bit ARM compat
+#if defined(__aarch64__)
     peak = vmaxvq_f32(vpeak);
+#else
+    float32x2_t half = vpmax_f32(vget_low_f32(vpeak), vget_high_f32(vpeak));
+    half = vpmax_f32(half, half);
+    peak = vget_lane_f32(half, 0);
+#endif
     for (; i < sample_count; ++i) {
         float a = std::fabs(buf[i]);
         if (a > peak) peak = a;
