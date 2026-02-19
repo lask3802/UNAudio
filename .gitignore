@@ -41,3 +41,6 @@ Makefile
 local.properties
 *.apk
 *.aab
+
+# CodeQL
+_codeql_detected_source_root
