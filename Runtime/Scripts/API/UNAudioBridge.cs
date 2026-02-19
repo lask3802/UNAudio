@@ -14,7 +14,8 @@ namespace UNAudio
 
         // ── Engine lifecycle ─────────────────────────────────────
 
-        [DllImport(LibName)] public static extern int Initialize(UNAudioOutputConfig config);
+        [DllImport(LibName, EntryPoint = "UNAudio_Initialize")]
+        public static extern int Initialize(UNAudioOutputConfig config);
         [DllImport(LibName, EntryPoint = "UNAudio_Shutdown")]
         public static extern void Shutdown();
         [DllImport(LibName, EntryPoint = "UNAudio_IsInitialized")]
