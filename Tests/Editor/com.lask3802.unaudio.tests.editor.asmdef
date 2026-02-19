@@ -1,0 +1,23 @@
+{
+    "name": "com.lask3802.unaudio.tests.editor",
+    "rootNamespace": "UNAudio.Tests.Editor",
+    "references": [
+        "com.lask3802.unaudio",
+        "com.lask3802.unaudio.editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
