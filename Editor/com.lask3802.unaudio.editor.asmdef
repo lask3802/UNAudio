@@ -1,0 +1,18 @@
+{
+    "name": "com.lask3802.unaudio.editor",
+    "rootNamespace": "UNAudio.Editor",
+    "references": [
+        "com.lask3802.unaudio"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

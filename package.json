@@ -1,0 +1,21 @@
+{
+    "name": "com.lask3802.unaudio",
+    "version": "0.1.0",
+    "displayName": "UNAudio - Unity Native Audio Engine",
+    "description": "A high-performance, low-latency native audio engine designed for Unity.",
+    "unity": "2020.3",
+    "documentationUrl": "https://github.com/lask3802/UNAudio",
+    "licensesUrl": "https://github.com/lask3802/UNAudio/blob/main/LICENSE",
+    "keywords": [
+        "audio",
+        "native",
+        "low-latency",
+        "compressed-audio",
+        "cross-platform"
+    ],
+    "author": {
+        "name": "UNAudio Team",
+        "url": "https://github.com/lask3802/UNAudio"
+    },
+    "dependencies": {}
+}
