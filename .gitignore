@@ -1,0 +1,46 @@
+# Build artifacts
+Native/build/
+*.o
+*.obj
+*.dll
+*.so
+*.dylib
+*.bundle
+*.framework
+*.a
+*.lib
+
+# IDE
+.vs/
+.vscode/
+*.sln
+*.vcxproj*
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Unity
+Library/
+Temp/
+obj/
+Logs/
+UserSettings/
+*.csproj
+*.unityproj
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Gradle
+.gradle/
+local.properties
+*.apk
+*.aab
+
+# CodeQL
+_codeql_detected_source_root

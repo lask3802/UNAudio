@@ -1,0 +1,20 @@
+{
+    "name": "com.lask3802.unaudio.tests.runtime",
+    "rootNamespace": "UNAudio.Tests.Runtime",
+    "references": [
+        "com.lask3802.unaudio"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
