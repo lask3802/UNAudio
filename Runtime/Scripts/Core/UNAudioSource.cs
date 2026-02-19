@@ -78,8 +78,19 @@ namespace UNAudio
         public void SeekToTime(float seconds)
         {
             if (clip == null || clip.NativeHandle < 0) return;
+            if (clip.sampleRate <= 0) return;
             long frame = (long)(seconds * clip.sampleRate);
             UNAudioBridge.Seek(clip.NativeHandle, frame);
+        }
+
+        /// <summary>Current playback position in seconds (read from native DSP clock).</summary>
+        public double playbackTime
+        {
+            get
+            {
+                if (clip == null || clip.NativeHandle < 0) return 0.0;
+                return UNAudioBridge.GetPlaybackTime(clip.NativeHandle);
+            }
         }
 
         // ── Convenience statics ──────────────────────────────────

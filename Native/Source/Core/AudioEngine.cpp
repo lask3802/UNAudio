@@ -51,6 +51,11 @@ UNAudioResult AudioEngine::Initialize(const UNAudioOutputConfig& config) {
     // Create frame allocator for audio thread (128 KB arena)
     frameAllocator_ = std::make_unique<una::FrameAllocator>(128 * 1024);
 
+    // Initialize DSP clock for precise time reporting
+    dspClock_.sampleRate = config.sampleRate;
+    dspClock_.bufferSize = config.bufferSize;
+    dspClock_.reset();
+
     // TODO: Create platform-specific AudioOutput based on current platform
 
     initialized_ = true;
@@ -83,8 +88,9 @@ void AudioEngine::Shutdown() {
     { una::AudioCommand cmd; while (commandQueue_.try_pop(cmd)) {} }
     { una::AudioEvent evt; while (eventQueue_.try_pop(evt)) {} }
 
-    // Reset memory budget
+    // Reset memory budget and DSP clock
     memoryBudget_.reset();
+    dspClock_.reset();
 
     nextHandle_ = 0;
     initialized_ = false;
@@ -338,6 +344,31 @@ float AudioEngine::GetPeakLevel() const {
     return peakLevel_.load(std::memory_order_relaxed);
 }
 
+// ── Time queries ─────────────────────────────────────────────────
+
+double AudioEngine::GetDspTime() const {
+    return dspClock_.getTimeSeconds();
+}
+
+double AudioEngine::GetPlaybackTime(UNAudioSourceHandle handle) const {
+    if (!isValidHandle(handle)) return 0.0;
+    auto& src = sources_[handle];
+    if (!src || !src->decoder) return 0.0;
+
+    int64_t frame = src->decoder->GetCurrentFrame();
+    int32_t sr = src->clipInfo.sampleRate;
+    if (sr <= 0) return 0.0;
+
+    return static_cast<double>(frame) / sr;
+}
+
+int64_t AudioEngine::GetPlaybackFrame(UNAudioSourceHandle handle) const {
+    if (!isValidHandle(handle)) return 0;
+    auto& src = sources_[handle];
+    if (!src || !src->decoder) return 0;
+    return src->decoder->GetCurrentFrame();
+}
+
 // ── Event system ─────────────────────────────────────────────────
 
 bool AudioEngine::PollEvent(una::AudioEvent& outEvent) {
@@ -368,6 +399,9 @@ void AudioEngine::AudioCallback(float* outputBuffer, int frameCount, int channel
 
     // Handle finished voices
     processFinishedVoices();
+
+    // Advance DSP clock (at the END of callback for accurate interpolation)
+    dspClock_.advance(frameCount);
 }
 
 void AudioEngine::processCommands() {
@@ -521,6 +555,18 @@ UNAUDIO_EXPORT float UNAudio_GetCurrentLatency(void) {
 
 UNAUDIO_EXPORT float UNAudio_GetPeakLevel(void) {
     return AudioEngine::Instance().GetPeakLevel();
+}
+
+UNAUDIO_EXPORT double UNAudio_GetDspTime(void) {
+    return AudioEngine::Instance().GetDspTime();
+}
+
+UNAUDIO_EXPORT double UNAudio_GetPlaybackTime(int32_t handle) {
+    return AudioEngine::Instance().GetPlaybackTime(handle);
+}
+
+UNAUDIO_EXPORT int64_t UNAudio_GetPlaybackFrame(int32_t handle) {
+    return AudioEngine::Instance().GetPlaybackFrame(handle);
 }
 
 } // extern "C"

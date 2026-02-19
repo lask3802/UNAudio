@@ -28,4 +28,5 @@ bool FLACDecoder::Seek(int64_t frame) {
 
 UNAudioFormat FLACDecoder::GetFormat()   const { return format_; }
 bool FLACDecoder::SupportsStreaming()     const { return true; }
-int64_t FLACDecoder::GetTotalFrames()    const { return totalFrames_; }
+int64_t FLACDecoder::GetTotalFrames()       const { return totalFrames_; }
+int64_t FLACDecoder::GetCurrentFrame()      const { return currentFrame_; }

@@ -28,4 +28,5 @@ bool VorbisDecoder::Seek(int64_t frame) {
 
 UNAudioFormat VorbisDecoder::GetFormat()   const { return format_; }
 bool VorbisDecoder::SupportsStreaming()     const { return true; }
-int64_t VorbisDecoder::GetTotalFrames()    const { return totalFrames_; }
+int64_t VorbisDecoder::GetTotalFrames()       const { return totalFrames_; }
+int64_t VorbisDecoder::GetCurrentFrame()      const { return currentFrame_; }

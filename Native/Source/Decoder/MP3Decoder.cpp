@@ -30,4 +30,5 @@ bool MP3Decoder::Seek(int64_t frame) {
 
 UNAudioFormat MP3Decoder::GetFormat()   const { return format_; }
 bool MP3Decoder::SupportsStreaming()     const { return true; }
-int64_t MP3Decoder::GetTotalFrames()    const { return totalFrames_; }
+int64_t MP3Decoder::GetTotalFrames()       const { return totalFrames_; }
+int64_t MP3Decoder::GetCurrentFrame()      const { return currentFrame_; }

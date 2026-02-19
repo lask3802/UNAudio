@@ -52,7 +52,11 @@ void AudioMixer::Process(float* outputBuffer, int frameCount, int channels,
 
         if (framesDecoded <= 0) {
             if (info.loop) {
-                // Loop: seek to beginning and try again
+                // Loop: seek to beginning and try again.
+                // Safe: this runs on the audio thread, same as Decode() and
+                // processCommands(). processCommands() runs BEFORE Process(),
+                // so any queued Seek is applied first; loop-seek here cannot
+                // race with it — both are sequential on the same thread.
                 info.decoder->Seek(0);
                 framesDecoded = info.decoder->Decode(mixBuf, frameCount);
             }

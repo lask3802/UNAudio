@@ -2,6 +2,7 @@
 #define UNAUDIO_AUDIO_ENGINE_H
 
 #include "AudioTypes.h"
+#include "AudioClock.h"
 #include "CommandQueue.h"
 #include "EventQueue.h"
 #include "FrameAllocator.h"
@@ -53,6 +54,14 @@ public:
     UNAudioState GetState(UNAudioSourceHandle handle) const;
     UNAudioClipInfo GetClipInfo(UNAudioSourceHandle handle) const;
     bool Seek(UNAudioSourceHandle handle, int64_t frame);
+
+    // Time queries (lock-free, sub-callback interpolation)
+    /// Global DSP time in seconds (interpolated between callbacks).
+    double GetDspTime() const;
+    /// Per-source playback position in seconds (decode head, atomic).
+    double GetPlaybackTime(UNAudioSourceHandle handle) const;
+    /// Per-source playback position in frames (decode head, atomic).
+    int64_t GetPlaybackFrame(UNAudioSourceHandle handle) const;
 
     // Engine-level
     void SetMasterVolume(float volume);
@@ -125,6 +134,7 @@ private:
     SourceSnapshot snapshots_[2];
     std::atomic<int> activeSnapshot_{0};
 
+    una::AudioClock dspClock_;
     una::CommandQueue commandQueue_;
     una::EventQueue eventQueue_;
     una::MemoryBudget memoryBudget_;
@@ -161,6 +171,9 @@ UNAUDIO_EXPORT float    UNAudio_GetMasterVolume(void);
 UNAUDIO_EXPORT void     UNAudio_SetBufferSize(int32_t frames);
 UNAUDIO_EXPORT float    UNAudio_GetCurrentLatency(void);
 UNAUDIO_EXPORT float    UNAudio_GetPeakLevel(void);
+UNAUDIO_EXPORT double   UNAudio_GetDspTime(void);
+UNAUDIO_EXPORT double   UNAudio_GetPlaybackTime(int32_t handle);
+UNAUDIO_EXPORT int64_t  UNAudio_GetPlaybackFrame(int32_t handle);
 
 #ifdef __cplusplus
 }

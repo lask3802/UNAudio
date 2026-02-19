@@ -40,11 +40,15 @@ public:
     FrameAllocator(const FrameAllocator&) = delete;
     FrameAllocator& operator=(const FrameAllocator&) = delete;
 
-    // O(1) aligned allocation — NO syscall, NO lock
+    // O(1) aligned allocation — NO syscall, NO lock.
+    // Returns nullptr on OOM in both debug and release builds.
+    // Callers (e.g. AudioMixer::Process) MUST handle nullptr with a
+    // heap fallback.
     void* alloc(size_t bytes, size_t align = 16) {
         size_t aligned_offset = (offset_ + align - 1) & ~(align - 1);
         if (aligned_offset + bytes > capacity_) {
             assert(false && "FrameAllocator: out of memory");
+            oomCount_++;
             return nullptr;
         }
         void* ptr = base_ + aligned_offset;
@@ -52,12 +56,15 @@ public:
         return ptr;
     }
 
+    /// Number of OOM events since last reset (diagnostic counter).
+    size_t oom_count() const { return oomCount_; }
+
     template <typename T>
     T* alloc_array(size_t count, size_t align = 16) {
         return static_cast<T*>(alloc(sizeof(T) * count, align));
     }
 
-    void reset() { offset_ = 0; }
+    void reset() { offset_ = 0; oomCount_ = 0; }
 
     size_t capacity()  const { return capacity_; }
     size_t used()      const { return offset_; }
@@ -69,6 +76,7 @@ private:
     uint8_t* base_;
     size_t   capacity_;
     size_t   offset_;
+    size_t   oomCount_ = 0;
 };
 
 } // namespace una

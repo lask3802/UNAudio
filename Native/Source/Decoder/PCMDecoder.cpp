@@ -131,6 +131,7 @@ bool PCMDecoder::Seek(int64_t frame) {
     return true;
 }
 
-UNAudioFormat PCMDecoder::GetFormat()   const { return format_; }
-bool PCMDecoder::SupportsStreaming()     const { return false; }
-int64_t PCMDecoder::GetTotalFrames()    const { return totalFrames_; }
+UNAudioFormat PCMDecoder::GetFormat()      const { return format_; }
+bool PCMDecoder::SupportsStreaming()        const { return false; }
+int64_t PCMDecoder::GetTotalFrames()       const { return totalFrames_; }
+int64_t PCMDecoder::GetCurrentFrame()      const { return currentFrame_.load(std::memory_order_relaxed); }

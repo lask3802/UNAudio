@@ -22,6 +22,7 @@ public:
     UNAudioFormat GetFormat() const override;
     bool SupportsStreaming() const override;
     int64_t GetTotalFrames() const override;
+    int64_t GetCurrentFrame() const override;
 
 private:
     UNAudioFormat format_{};

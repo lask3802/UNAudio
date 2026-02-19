@@ -73,6 +73,15 @@ namespace UNAudio
         public static extern float GetCurrentLatency();
         [DllImport(LibName, EntryPoint = "UNAudio_GetPeakLevel")]
         public static extern float GetPeakLevel();
+
+        // ── Time queries ────────────────────────────────────────────
+
+        [DllImport(LibName, EntryPoint = "UNAudio_GetDspTime")]
+        public static extern double GetDspTime();
+        [DllImport(LibName, EntryPoint = "UNAudio_GetPlaybackTime")]
+        public static extern double GetPlaybackTime(int handle);
+        [DllImport(LibName, EntryPoint = "UNAudio_GetPlaybackFrame")]
+        public static extern long GetPlaybackFrame(int handle);
     }
 
     /// <summary>
