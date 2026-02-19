@@ -1,0 +1,101 @@
+name: Native Build & Test
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'Native/**'
+      - '.github/workflows/native-build.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'Native/**'
+      - '.github/workflows/native-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    name: Build (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - name: Configure CMake
+        run: |
+          cd Native
+          mkdir -p build && cd build
+          cmake .. -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: |
+          cd Native/build
+          cmake --build . --config Release
+
+      - name: Verify exported symbols
+        run: |
+          nm -D Native/build/libUNAudio.so | grep "T UNAudio_"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libUNAudio-linux-x64
+          path: Native/build/libUNAudio.so
+
+  build-macos:
+    name: Build (macOS x86_64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: |
+          cd Native
+          mkdir -p build && cd build
+          cmake .. -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: |
+          cd Native/build
+          cmake --build . --config Release
+
+      - name: Verify exported symbols
+        run: |
+          nm -gU Native/build/libUNAudio.dylib | grep "_UNAudio_"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libUNAudio-macos-x64
+          path: Native/build/libUNAudio.dylib
+
+  build-windows:
+    name: Build (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: |
+          cd Native
+          mkdir build
+          cd build
+          cmake .. -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: |
+          cd Native/build
+          cmake --build . --config Release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UNAudio-windows-x64
+          path: Native/build/Release/UNAudio.dll
