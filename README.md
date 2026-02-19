@@ -51,7 +51,7 @@ UNAudio is a high-performance, low-latency native audio engine designed specific
 │                           │                                 │
 │  ┌────────────────────────▼──────────────────────────────┐ │
 │  │              Audio Hardware Layer                     │ │
-│  │  (WASAPI/CoreAudio/ALSA/AAudio)                      │ │
+│  │  (WASAPI/CoreAudio/ALSA/Oboe)                        │ │
 │  └───────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -112,7 +112,7 @@ public:
 - **Windows**: WASAPI (低延遲模式)
 - **macOS/iOS**: CoreAudio
 - **Linux**: ALSA / PulseAudio
-- **Android**: AAudio / OpenSL ES
+- **Android**: Oboe (自動選擇 AAudio 或 OpenSL ES)
 
 **配置**:
 ```cpp
@@ -129,65 +129,106 @@ struct AudioOutputConfig {
 
 ##### Android 平台支援 (Android Platform Support)
 
-**音頻 API 選擇**:
-- **AAudio** (Android 8.0+ / API 26+): 推薦，最低延遲
-- **OpenSL ES** (Android 4.1+ / API 16+): 廣泛相容性支援
+**推薦使用 Oboe 函式庫**:
+- **Oboe** (Google 官方): 簡化 API，自動處理 AAudio/OpenSL ES 切換
+- 自動選擇最佳音頻 API (AAudio 或 OpenSL ES)
+- 支援 API 16+ (Android 4.1+)，在 API 26+ 自動使用 AAudio
+- 處理音頻路徑優化和延遲管理
 
-**AAudio 實作**:
+**Oboe 實作**:
 ```cpp
-class AAudioOutput {
+#include <oboe/Oboe.h>
+
+class OboeAudioOutput : public oboe::AudioStreamCallback {
 private:
-    AAudioStream* stream;
-    int32_t bufferSize;
+    std::shared_ptr<oboe::AudioStream> stream;
     
 public:
     bool Initialize(int32_t sampleRate, int32_t channels) {
-        AAudioStreamBuilder* builder;
-        aaudio_result_t result = AAudio_createStreamBuilder(&builder);
+        oboe::AudioStreamBuilder builder;
         
-        // 設定低延遲模式
-        AAudioStreamBuilder_setPerformanceMode(builder, 
-            AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+        // 設定音頻參數
+        builder.setDirection(oboe::Direction::Output)
+               ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
+               ->setSharingMode(oboe::SharingMode::Exclusive)
+               ->setSampleRate(sampleRate)
+               ->setChannelCount(channels)
+               ->setFormat(oboe::AudioFormat::Float)
+               ->setCallback(this);
         
-        // 設定共享模式以獲得更好的兼容性
-        AAudioStreamBuilder_setSharingMode(builder, 
-            AAUDIO_SHARING_MODE_SHARED);
+        // 開啟音頻流
+        oboe::Result result = builder.openStream(stream);
+        if (result != oboe::Result::OK) {
+            return false;
+        }
         
-        AAudioStreamBuilder_setSampleRate(builder, sampleRate);
-        AAudioStreamBuilder_setChannelCount(builder, channels);
-        AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
-        AAudioStreamBuilder_setDataCallback(builder, DataCallback, this);
-        
-        result = AAudioStreamBuilder_openStream(builder, &stream);
-        AAudioStreamBuilder_delete(builder);
-        
-        return result == AAUDIO_OK;
+        // 啟動音頻流
+        result = stream->requestStart();
+        return result == oboe::Result::OK;
     }
     
-    static aaudio_data_callback_result_t DataCallback(
-        AAudioStream* stream,
-        void* userData,
+    // Oboe 回調函數
+    oboe::DataCallbackResult onAudioReady(
+        oboe::AudioStream* audioStream,
         void* audioData,
-        int32_t numFrames) {
+        int32_t numFrames) override {
         
-        AAudioOutput* output = static_cast<AAudioOutput*>(userData);
-        output->FillAudioBuffer((float*)audioData, numFrames);
-        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+        float* outputBuffer = static_cast<float*>(audioData);
+        FillAudioBuffer(outputBuffer, numFrames);
+        
+        return oboe::DataCallbackResult::Continue;
+    }
+    
+    void Stop() {
+        if (stream) {
+            stream->requestStop();
+            stream->close();
+        }
+    }
+    
+    // 取得實際音頻參數
+    int32_t GetSampleRate() const {
+        return stream ? stream->getSampleRate() : 0;
+    }
+    
+    int32_t GetBufferSizeInFrames() const {
+        return stream ? stream->getBufferSizeInFrames() : 0;
+    }
+    
+    // 動態調整緩衝大小以優化延遲
+    void OptimizeLatency() {
+        if (!stream) return;
+        
+        auto result = stream->setBufferSizeInFrames(
+            stream->getFramesPerBurst() * 2
+        );
+        
+        if (result) {
+            // 緩衝大小已優化
+        }
     }
 };
 ```
 
+**Oboe 優勢**:
+- **自動 API 選擇**: 在 API 26+ 使用 AAudio，舊版使用 OpenSL ES
+- **自動重新連接**: 處理音頻設備變更（插拔耳機）
+- **延遲調優**: 自動偵測並使用最佳緩衝大小
+- **穩定性**: Google 維護，已在眾多應用中驗證
+- **簡化代碼**: 減少約 60% 的平台相關代碼
+
 **Android 特性**:
 - 自動裝置選擇（耳機/揚聲器）
 - 低延遲音頻路徑偵測
-- 快速音訊緩衝大小調整
+- 動態緩衝大小調整
 - 音頻焦點管理 (AudioFocus)
+- 自動處理音頻中斷和恢復
 
 **Gradle 整合**:
 ```gradle
 android {
     defaultConfig {
-        minSdkVersion 26  // AAudio 推薦，OpenSL ES 支援 API 16+
+        minSdkVersion 16  // Oboe 支援 API 16+，自動切換 AAudio/OpenSL ES
         ndk {
             abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
         }
@@ -202,16 +243,71 @@ android {
 }
 
 dependencies {
-    implementation 'com.google.oboe:oboe:1.7.0'  // Optional: Oboe wrapper
+    // Oboe - Google 官方低延遲音頻庫
+    implementation 'com.google.oboe:oboe:1.8.1'
 }
 ```
 
-**延遲優化**:
-| 裝置類型 | 典型延遲 | 緩衝設定 |
-|---------|---------|---------|
-| 高階裝置 (Pixel, Galaxy S) | 10-15ms | 192 frames @ 48kHz |
-| 中階裝置 | 15-25ms | 256 frames @ 48kHz |
-| 低階裝置 | 25-40ms | 512 frames @ 48kHz |
+**CMakeLists.txt 配置**:
+```cmake
+cmake_minimum_required(VERSION 3.22.1)
+project(UNAudio)
+
+# 尋找 Oboe 套件
+find_package(oboe REQUIRED CONFIG)
+
+# 添加原生庫
+add_library(UNAudio SHARED
+    Native/Source/Android/OboeAudioOutput.cpp
+    Native/Source/Core/AudioEngine.cpp
+    # ... 其他源文件
+)
+
+# 連結 Oboe
+target_link_libraries(UNAudio
+    oboe::oboe
+    log
+    android
+)
+```
+
+**延遲優化** (使用 Oboe):
+| 裝置類型 | API 版本 | 使用 API | 典型延遲 | 緩衝設定 |
+|---------|---------|---------|---------|---------|
+| 高階裝置 (Pixel, Galaxy S) | API 26+ | AAudio | 10-15ms | 192 frames @ 48kHz |
+| 高階裝置 (Pixel, Galaxy S) | API 16-25 | OpenSL ES | 15-20ms | 256 frames @ 48kHz |
+| 中階裝置 | API 26+ | AAudio | 15-25ms | 256 frames @ 48kHz |
+| 中階裝置 | API 16-25 | OpenSL ES | 25-35ms | 384 frames @ 48kHz |
+| 低階裝置 | 所有版本 | 自動選擇 | 30-50ms | 512 frames @ 48kHz |
+
+**Oboe 最佳實踐**:
+```cpp
+// 1. 使用 Exclusive 模式以獲得最低延遲
+builder.setSharingMode(oboe::SharingMode::Exclusive);
+
+// 2. 設定 FramesPerBurst 的倍數作為緩衝大小
+int32_t framesPerBurst = stream->getFramesPerBurst();
+stream->setBufferSizeInFrames(framesPerBurst * 2);
+
+// 3. 處理音頻設備變更
+void onErrorAfterClose(oboe::AudioStream* stream, oboe::Result error) override {
+    // 自動重建音頻流
+    if (error == oboe::Result::ErrorDisconnected) {
+        Initialize(sampleRate, channels);
+    }
+}
+
+// 4. 監控實際延遲
+int64_t framesWritten = stream->getFramesWritten();
+int64_t framesRead = stream->getFramesRead();
+int32_t latencyFrames = framesWritten - framesRead;
+double latencyMs = (latencyFrames * 1000.0) / sampleRate;
+```
+
+**參考資源**:
+- Oboe 官方文件: https://github.com/google/oboe
+- Oboe 最佳實踐: https://developer.android.com/ndk/guides/audio/oboe/getting-started
+- Oboe 延遲調優指南: https://github.com/google/oboe/blob/master/docs/FullGuide.md
 
 ##### iOS 平台支援 (iOS Platform Support)
 
@@ -1190,7 +1286,7 @@ public:
 | Windows (WASAPI Shared) | < 10ms | 128 frames @ 48kHz |
 | macOS (CoreAudio) | < 8ms | 128 frames @ 48kHz |
 | iOS (CoreAudio) | < 10ms | 256 frames @ 48kHz |
-| Android (AAudio) | < 15ms | 256 frames @ 48kHz |
+| Android (Oboe/AAudio) | < 15ms | 192-256 frames @ 48kHz |
 | Linux (ALSA) | < 12ms | 256 frames @ 48kHz |
 
 ### CPU 使用率目標 (CPU Usage Targets)
