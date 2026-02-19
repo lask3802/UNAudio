@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(UNAudio VERSION 0.1.0 LANGUAGES CXX)
+project(UNAudio VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,6 +12,7 @@ set(CORE_SOURCES
 )
 
 set(DECODER_SOURCES
+    Source/Decoder/PCMDecoder.cpp
     Source/Decoder/MP3Decoder.cpp
     Source/Decoder/VorbisDecoder.cpp
     Source/Decoder/FLACDecoder.cpp
@@ -85,4 +86,34 @@ else()
         CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON
     )
+endif()
+
+# ── Tests ─────────────────────────────────────────────────────────
+
+option(UNAUDIO_BUILD_TESTS "Build unit tests" OFF)
+
+if(UNAUDIO_BUILD_TESTS)
+    enable_testing()
+
+    # Single-TU build: test_main.cpp #includes all other test files
+    add_executable(UNAudioTests
+        Tests/test_main.cpp
+        # Re-use library sources (link statically for tests)
+        ${CORE_SOURCES}
+        ${DECODER_SOURCES}
+        ${MIXER_SOURCES}
+    )
+
+    target_include_directories(UNAudioTests PRIVATE
+        Source
+        Source/Core
+        Source/Decoder
+        Source/Mixer
+        Source/Platform
+    )
+
+    # Force scalar SIMD for predictable test results on CI
+    target_compile_definitions(UNAudioTests PRIVATE UNA_FORCE_SCALAR)
+
+    add_test(NAME UNAudioTests COMMAND UNAudioTests)
 endif()

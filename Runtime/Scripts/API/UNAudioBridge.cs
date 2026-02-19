@@ -50,10 +50,16 @@ namespace UNAudio
         public static extern void SetVolume(int handle, float volume);
         [DllImport(LibName, EntryPoint = "UNAudio_GetVolume")]
         public static extern float GetVolume(int handle);
+        [DllImport(LibName, EntryPoint = "UNAudio_SetPan")]
+        public static extern void SetPan(int handle, float pan);
+        [DllImport(LibName, EntryPoint = "UNAudio_GetPan")]
+        public static extern float GetPan(int handle);
         [DllImport(LibName, EntryPoint = "UNAudio_SetLoop")]
         public static extern void SetLoop(int handle, bool loop);
         [DllImport(LibName, EntryPoint = "UNAudio_GetState")]
         public static extern int GetState(int handle);
+        [DllImport(LibName, EntryPoint = "UNAudio_Seek")]
+        public static extern int Seek(int handle, long frame);
 
         // ── Engine-level ─────────────────────────────────────────
 
@@ -65,6 +71,8 @@ namespace UNAudio
         public static extern void SetBufferSize(int frames);
         [DllImport(LibName, EntryPoint = "UNAudio_GetCurrentLatency")]
         public static extern float GetCurrentLatency();
+        [DllImport(LibName, EntryPoint = "UNAudio_GetPeakLevel")]
+        public static extern float GetPeakLevel();
     }
 
     /// <summary>
