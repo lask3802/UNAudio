@@ -1,15 +1,10 @@
-#pragma once
+#ifndef UNAUDIO_FRAME_ALLOCATOR_H
+#define UNAUDIO_FRAME_ALLOCATOR_H
+
 /*
- * UNAudio — Frame Allocator
- *
- * Bump allocator for the audio thread. Guarantees O(1) allocation with no
- * syscalls, no locks, and no fragmentation. The entire arena is reset at
- * the beginning of each audio callback frame.
- *
- * Usage:
- *   FrameAllocator alloc(256 * 1024);          // 256 KB arena
- *   alloc.reset();                              // top of audio callback
- *   float* buf = alloc.alloc_array<float>(512); // 512 floats, 16-byte aligned
+ * Bump allocator for the audio thread.
+ * Guarantees O(1) allocation with no syscalls, no locks, no fragmentation.
+ * The entire arena is reset at the beginning of each audio callback.
  */
 
 #include <cstddef>
@@ -41,13 +36,11 @@ public:
 #endif
     }
 
-    // Non-copyable, non-movable
     FrameAllocator(const FrameAllocator&) = delete;
     FrameAllocator& operator=(const FrameAllocator&) = delete;
 
     // O(1) aligned allocation — NO syscall, NO lock
-    void* alloc(size_t bytes, size_t align = 16)
-    {
+    void* alloc(size_t bytes, size_t align = 16) {
         size_t aligned_offset = (offset_ + align - 1) & ~(align - 1);
         if (aligned_offset + bytes > capacity_) {
             assert(false && "FrameAllocator: out of memory");
@@ -58,17 +51,13 @@ public:
         return ptr;
     }
 
-    // Typed array allocation with SIMD-friendly alignment
     template <typename T>
-    T* alloc_array(size_t count, size_t align = 16)
-    {
+    T* alloc_array(size_t count, size_t align = 16) {
         return static_cast<T*>(alloc(sizeof(T) * count, align));
     }
 
-    // Reset the entire arena (call at top of each audio callback)
     void reset() { offset_ = 0; }
 
-    // Query
     size_t capacity()  const { return capacity_; }
     size_t used()      const { return offset_; }
     size_t remaining() const { return capacity_ - offset_; }
@@ -82,3 +71,5 @@ private:
 };
 
 } // namespace una
+
+#endif // UNAUDIO_FRAME_ALLOCATOR_H

@@ -15,6 +15,10 @@ namespace UNAudio
         [Tooltip("Playback volume (0 = silent, 1 = full).")]
         public float volume = 1.0f;
 
+        [Range(-1f, 1f)]
+        [Tooltip("Stereo pan (-1 = left, 0 = center, 1 = right).")]
+        public float pan;
+
         [Tooltip("Loop playback.")]
         public bool loop;
 
@@ -44,6 +48,7 @@ namespace UNAudio
             if (clip == null) return;
             EnsureLoaded();
             UNAudioBridge.SetVolume(clip.NativeHandle, volume);
+            UNAudioBridge.SetPan(clip.NativeHandle, pan);
             UNAudioBridge.SetLoop(clip.NativeHandle, loop);
             UNAudioBridge.Play(clip.NativeHandle);
         }
@@ -60,6 +65,21 @@ namespace UNAudio
         {
             if (clip == null || clip.NativeHandle < 0) return;
             UNAudioBridge.Stop(clip.NativeHandle);
+        }
+
+        /// <summary>Seek to a specific sample frame.</summary>
+        public void Seek(long frame)
+        {
+            if (clip == null || clip.NativeHandle < 0) return;
+            UNAudioBridge.Seek(clip.NativeHandle, frame);
+        }
+
+        /// <summary>Seek to a specific time in seconds.</summary>
+        public void SeekToTime(float seconds)
+        {
+            if (clip == null || clip.NativeHandle < 0) return;
+            long frame = (long)(seconds * clip.sampleRate);
+            UNAudioBridge.Seek(clip.NativeHandle, frame);
         }
 
         // ── Convenience statics ──────────────────────────────────
@@ -100,8 +120,9 @@ namespace UNAudio
         {
             if (clip == null || clip.NativeHandle < 0) return;
 
-            // Sync volume to native side
+            // Sync properties to native side
             UNAudioBridge.SetVolume(clip.NativeHandle, volume);
+            UNAudioBridge.SetPan(clip.NativeHandle, pan);
             UNAudioBridge.SetLoop(clip.NativeHandle, loop);
         }
 

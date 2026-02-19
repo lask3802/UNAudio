@@ -2,6 +2,10 @@
 #define UNAUDIO_AUDIO_ENGINE_H
 
 #include "AudioTypes.h"
+#include "CommandQueue.h"
+#include "EventQueue.h"
+#include "FrameAllocator.h"
+#include "MemoryBudget.h"
 #include <vector>
 #include <memory>
 #include <mutex>
@@ -34,15 +38,28 @@ public:
     // Properties
     void SetVolume(UNAudioSourceHandle handle, float volume);
     float GetVolume(UNAudioSourceHandle handle) const;
+    void SetPan(UNAudioSourceHandle handle, float pan);
+    float GetPan(UNAudioSourceHandle handle) const;
     void SetLoop(UNAudioSourceHandle handle, bool loop);
     UNAudioState GetState(UNAudioSourceHandle handle) const;
     UNAudioClipInfo GetClipInfo(UNAudioSourceHandle handle) const;
+    bool Seek(UNAudioSourceHandle handle, int64_t frame);
 
     // Engine-level
     void SetMasterVolume(float volume);
     float GetMasterVolume() const;
     void SetBufferSize(int32_t frames);
     float GetCurrentLatency() const;
+    float GetPeakLevel() const;
+
+    // Event polling (called from main thread)
+    bool PollEvent(una::AudioEvent& outEvent);
+
+    // Audio callback (called from audio thread)
+    void AudioCallback(float* outputBuffer, int frameCount, int channels);
+
+    // Memory budget
+    una::MemoryUsage GetMemoryUsage() const;
 
 private:
     AudioEngine();
@@ -52,20 +69,39 @@ private:
 
     struct AudioSource {
         std::unique_ptr<AudioDecoder> decoder;
-        UNAudioState state = UNAUDIO_STATE_STOPPED;
-        float volume = 1.0f;
-        bool loop = false;
+        std::atomic<UNAudioState> state{UNAUDIO_STATE_STOPPED};
+        std::atomic<float> volume{1.0f};
+        std::atomic<float> pan{0.0f};
+        std::atomic<bool>  loop{false};
         UNAudioClipInfo clipInfo{};
+
+        // Owned data buffer (keeps data alive for decoder)
+        std::vector<uint8_t> audioData;
     };
+
+    // Helper: check if handle is valid
+    bool isValidHandle(UNAudioSourceHandle handle) const;
+
+    // Process commands from the command queue (audio thread)
+    void processCommands();
+
+    // Process finished voices (audio thread)
+    void processFinishedVoices();
 
     std::vector<std::unique_ptr<AudioSource>> sources_;
     std::unique_ptr<AudioMixer> mixer_;
     std::unique_ptr<AudioOutput> output_;
+    std::unique_ptr<una::FrameAllocator> frameAllocator_;
     std::mutex mutex_;
     std::atomic<bool> initialized_{false};
     std::atomic<float> masterVolume_{1.0f};
+    std::atomic<float> peakLevel_{0.0f};
     UNAudioOutputConfig config_{};
     int32_t nextHandle_ = 0;
+
+    una::CommandQueue commandQueue_;
+    una::EventQueue eventQueue_;
+    una::MemoryBudget memoryBudget_;
 };
 
 // ── P/Invoke C API (exported to Unity) ──────────────────────────
@@ -87,14 +123,18 @@ UNAUDIO_EXPORT int32_t  UNAudio_Stop(int32_t handle);
 
 UNAUDIO_EXPORT void     UNAudio_SetVolume(int32_t handle, float volume);
 UNAUDIO_EXPORT float    UNAudio_GetVolume(int32_t handle);
+UNAUDIO_EXPORT void     UNAudio_SetPan(int32_t handle, float pan);
+UNAUDIO_EXPORT float    UNAudio_GetPan(int32_t handle);
 UNAUDIO_EXPORT void     UNAudio_SetLoop(int32_t handle, int32_t loop);
 UNAUDIO_EXPORT int32_t  UNAudio_GetState(int32_t handle);
 UNAUDIO_EXPORT UNAudioClipInfo UNAudio_GetClipInfo(int32_t handle);
+UNAUDIO_EXPORT int32_t  UNAudio_Seek(int32_t handle, int64_t frame);
 
 UNAUDIO_EXPORT void     UNAudio_SetMasterVolume(float volume);
 UNAUDIO_EXPORT float    UNAudio_GetMasterVolume(void);
 UNAUDIO_EXPORT void     UNAudio_SetBufferSize(int32_t frames);
 UNAUDIO_EXPORT float    UNAudio_GetCurrentLatency(void);
+UNAUDIO_EXPORT float    UNAudio_GetPeakLevel(void);
 
 #ifdef __cplusplus
 }
