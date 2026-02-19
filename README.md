@@ -733,7 +733,7 @@ public class AudioPlayer : MonoBehaviour
 ### 3D 音效 (3D Audio)
 
 ```csharp
-public class 3DAudioExample : MonoBehaviour
+public class SpatialAudioExample : MonoBehaviour
 {
     void Start()
     {
