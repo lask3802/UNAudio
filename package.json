@@ -1,0 +1,36 @@
+{
+  "name": "com.lask.unaudio",
+  "version": "1.0.0",
+  "displayName": "UNAudio - Low-Latency Native Audio",
+  "description": "High-performance, low-latency audio engine for Unity with native Android (AAudio) and iOS (CoreAudio) support. Achieve <15ms latency on Android and <8ms on iOS for real-time audio applications.",
+  "unity": "2020.3",
+  "keywords": [
+    "audio",
+    "low-latency",
+    "native",
+    "android",
+    "ios",
+    "aaudio",
+    "coreaudio",
+    "real-time",
+    "performance"
+  ],
+  "author": {
+    "name": "LASK",
+    "email": "lask380@hotmail.com",
+    "url": "https://github.com/lask3802"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lask3802/UNAudio.git"
+  },
+  "license": "MIT",
+  "dependencies": {},
+  "samples": [
+    {
+      "displayName": "Basic Usage Example",
+      "description": "Simple sine wave generator demonstrating UNAudio API usage",
+      "path": "Examples"
+    }
+  ]
+}

@@ -1,0 +1,140 @@
+name: iOS Build
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build iOS Native Library
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      
+    - name: Select Xcode version
+      run: sudo xcode-select -s /Applications/Xcode_14.2.app/Contents/Developer
+      
+    - name: Show Xcode version
+      run: xcodebuild -version
+      
+    - name: Create Xcode project for iOS
+      run: |
+        mkdir -p Build/iOS
+        cd Build/iOS
+        
+        # Create a simple Xcode project to build the native library
+        cat > build_ios.sh << 'EOF'
+        #!/bin/bash
+        set -e
+        
+        # Build for device (arm64)
+        clang++ -c \
+          -arch arm64 \
+          -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+          -mios-version-min=11.0 \
+          -O3 \
+          -fvisibility=hidden \
+          -I../../NativeSource/Core \
+          ../../NativeSource/iOS/UNAudioIOS.mm \
+          -o UNAudioIOS_arm64.o
+        
+        # Create static library for device
+        ar rcs libUNAudio_arm64.a UNAudioIOS_arm64.o
+        
+        # Build for simulator (arm64 and x86_64)
+        clang++ -c \
+          -arch arm64 \
+          -arch x86_64 \
+          -isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) \
+          -mios-simulator-version-min=11.0 \
+          -O3 \
+          -fvisibility=hidden \
+          -I../../NativeSource/Core \
+          ../../NativeSource/iOS/UNAudioIOS.mm \
+          -o UNAudioIOS_sim.o
+        
+        # Create static library for simulator
+        ar rcs libUNAudio_simulator.a UNAudioIOS_sim.o
+        
+        echo "✅ iOS libraries built successfully"
+        ls -lh libUNAudio*.a
+        EOF
+        
+        chmod +x build_ios.sh
+        ./build_ios.sh
+        
+    - name: Verify build outputs
+      run: |
+        echo "Build artifacts:"
+        ls -lh Build/iOS/libUNAudio*.a
+        file Build/iOS/libUNAudio*.a
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ios-native-libs
+        path: |
+          Build/iOS/libUNAudio*.a
+        retention-days: 30
+        
+    - name: Build summary
+      run: |
+        echo "### iOS Build Summary :rocket:" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Native libraries built successfully" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Targets:**" >> $GITHUB_STEP_SUMMARY
+        echo "- iOS Device (arm64)" >> $GITHUB_STEP_SUMMARY
+        echo "- iOS Simulator (arm64, x86_64)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Deployment Target:** iOS 11.0+" >> $GITHUB_STEP_SUMMARY
+
+  test-ios:
+    name: Test iOS Build
+    runs-on: macos-latest
+    needs: build-ios
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      
+    - name: Download build artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: ios-native-libs
+        path: build-output
+        
+    - name: Verify build outputs
+      run: |
+        echo "Verifying build outputs..."
+        
+        # Check device library
+        if [ -f "build-output/libUNAudio_arm64.a" ]; then
+          echo "✅ Found iOS device library"
+          file build-output/libUNAudio_arm64.a
+          
+          # Check architecture
+          lipo -info build-output/libUNAudio_arm64.a
+        else
+          echo "❌ Missing iOS device library"
+          exit 1
+        fi
+        
+        # Check simulator library
+        if [ -f "build-output/libUNAudio_simulator.a" ]; then
+          echo "✅ Found iOS simulator library"
+          file build-output/libUNAudio_simulator.a
+          
+          # Check architecture
+          lipo -info build-output/libUNAudio_simulator.a
+        else
+          echo "❌ Missing iOS simulator library"
+          exit 1
+        fi
+        
+        echo "All required libraries present!"
