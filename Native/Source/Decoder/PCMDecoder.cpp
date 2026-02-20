@@ -2,6 +2,15 @@
 #include <cstring>
 #include <algorithm>
 
+// WAV/RIFF stores all multi-byte values in little-endian byte order.
+// The 16-bit and float decode paths use reinterpret_cast, which requires
+// the host CPU to also be little-endian. All Unity target platforms
+// (x86, x64, ARM, ARM64, WASM) are little-endian, so this is safe.
+// The 24-bit path reads individual bytes and is endian-independent.
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+    #error "PCMDecoder: WAV/RIFF is little-endian; big-endian host not supported"
+#endif
+
 PCMDecoder::PCMDecoder()  = default;
 PCMDecoder::~PCMDecoder() = default;
 
@@ -103,7 +112,7 @@ int PCMDecoder::Decode(float* buffer, int frameCount) {
             buffer[i] = static_cast<float>(src[i]) * scale;
 
     } else if (!isFloat_ && format_.bitsPerSample == 24) {
-        // 24-bit int PCM — convert to float
+        // 24-bit int PCM — convert to float (byte-level access: endian-independent)
         size_t byteOffset = static_cast<size_t>(curFrame) * format_.blockAlign;
         const uint8_t* src = pcmData_ + byteOffset;
         constexpr float scale = 1.0f / 8388608.0f; // 2^23
