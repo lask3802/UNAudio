@@ -2,39 +2,63 @@
 #define UNAUDIO_AUDIO_MIXER_H
 
 #include "../Core/AudioTypes.h"
+#include "../Core/FrameAllocator.h"
 #include <vector>
-#include <mutex>
 #include <cstdint>
+#include <functional>
+#include <atomic>
 
-/// Multi-track audio mixer with SIMD-ready mixing path.
+class AudioDecoder;
+
+/// Callback to get a source's decoder, volume, and state from the engine.
+struct MixSourceInfo {
+    AudioDecoder* decoder;
+    float volume;
+    float pan;          // -1.0 (left) to 1.0 (right)
+    bool  loop;
+    UNAudioState state;
+};
+
+using MixSourceCallback = std::function<bool(UNAudioSourceHandle, MixSourceInfo&)>;
+
+/// Multi-track audio mixer with SIMD mixing path.
+/// Lock-free on the audio thread: no mutex, no heap allocation in Process().
+///
+/// The engine provides a maxHandle bound and a callback that returns source
+/// info for each handle.  Process() iterates [0..maxHandle), asks the
+/// callback, and mixes every source whose state is PLAYING.
 class AudioMixer {
 public:
+    static constexpr int MAX_VOICES = 256;
+
     AudioMixer();
     ~AudioMixer();
 
-    /// Add a source to the mix bus.
-    void AddSource(UNAudioSourceHandle source);
+    /// Set callback to query source info from engine during Process().
+    void SetSourceCallback(MixSourceCallback callback);
 
-    /// Remove a source from the mix bus.
-    void RemoveSource(UNAudioSourceHandle source);
+    /// Mix sources [0..maxHandle) using callback to query each.
+    /// Uses FrameAllocator for zero-alloc scratch buffers on audio thread.
+    void Process(float* outputBuffer, int frameCount, int channels,
+                 int maxHandle = 0, una::FrameAllocator* alloc = nullptr);
 
-    /// Mix all active sources into outputBuffer (interleaved float).
-    void Process(float* outputBuffer, int frameCount, int channels);
-
-    /// Set the master volume applied after mixing.
     void SetMasterVolume(float volume);
-
-    /// Get the current peak level (linear, 0..1+).
     float GetPeakLevel() const;
 
-private:
-    std::vector<UNAudioSourceHandle> activeSources_;
-    std::mutex mutex_;
-    float masterVolume_ = 1.0f;
-    float peakLevel_    = 0.0f;
+    /// Get voices that finished during the last Process() call.
+    int GetFinishedVoiceCount() const;
+    const UNAudioSourceHandle* GetFinishedVoices() const;
 
-    // Temporary buffer used during mixing
-    std::vector<float> mixBuffer_;
+private:
+    UNAudioSourceHandle finishedVoices_[MAX_VOICES];
+    int finishedCount_ = 0;
+    std::atomic<float> masterVolume_{1.0f};  // written from main thread, read on audio thread
+    std::atomic<float> peakLevel_{0.0f};    // written on audio thread, read from main thread
+
+    MixSourceCallback sourceCallback_;
+
+    // Fallback heap buffer when no FrameAllocator is provided
+    std::vector<float> heapMixBuffer_;
 };
 
 #endif // UNAUDIO_AUDIO_MIXER_H

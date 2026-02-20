@@ -50,10 +50,16 @@ namespace UNAudio
         public static extern void SetVolume(int handle, float volume);
         [DllImport(LibName, EntryPoint = "UNAudio_GetVolume")]
         public static extern float GetVolume(int handle);
+        [DllImport(LibName, EntryPoint = "UNAudio_SetPan")]
+        public static extern void SetPan(int handle, float pan);
+        [DllImport(LibName, EntryPoint = "UNAudio_GetPan")]
+        public static extern float GetPan(int handle);
         [DllImport(LibName, EntryPoint = "UNAudio_SetLoop")]
-        public static extern void SetLoop(int handle, bool loop);
+        public static extern void SetLoop(int handle, [MarshalAs(UnmanagedType.I4)] bool loop);
         [DllImport(LibName, EntryPoint = "UNAudio_GetState")]
         public static extern int GetState(int handle);
+        [DllImport(LibName, EntryPoint = "UNAudio_Seek")]
+        public static extern int Seek(int handle, long frame);
 
         // ── Engine-level ─────────────────────────────────────────
 
@@ -65,6 +71,26 @@ namespace UNAudio
         public static extern void SetBufferSize(int frames);
         [DllImport(LibName, EntryPoint = "UNAudio_GetCurrentLatency")]
         public static extern float GetCurrentLatency();
+        [DllImport(LibName, EntryPoint = "UNAudio_GetPeakLevel")]
+        public static extern float GetPeakLevel();
+
+        // ── Time queries ────────────────────────────────────────────
+
+        [DllImport(LibName, EntryPoint = "UNAudio_GetDspTime")]
+        public static extern double GetDspTime();
+        [DllImport(LibName, EntryPoint = "UNAudio_GetPlaybackTime")]
+        public static extern double GetPlaybackTime(int handle);
+        [DllImport(LibName, EntryPoint = "UNAudio_GetPlaybackFrame")]
+        public static extern long GetPlaybackFrame(int handle);
+
+        // ── Event polling ───────────────────────────────────────────
+
+        /// <summary>
+        /// Poll the next audio event. Returns 1 if an event was available, 0 if empty.
+        /// Uses individual out-parameters to avoid struct layout differences.
+        /// </summary>
+        [DllImport(LibName, EntryPoint = "UNAudio_PollEvent")]
+        public static extern int PollEvent(out int eventType, out int voiceId, out int param);
     }
 
     /// <summary>

@@ -102,5 +102,8 @@ namespace UNAudio
 
         /// <summary>Get the estimated output latency in milliseconds.</summary>
         public float GetCurrentLatency() => UNAudioBridge.GetCurrentLatency();
+
+        /// <summary>Get the current peak level for metering (0 – 1+).</summary>
+        public float GetPeakLevel() => UNAudioBridge.GetPeakLevel();
     }
 }

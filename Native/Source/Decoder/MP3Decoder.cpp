@@ -6,19 +6,10 @@
 MP3Decoder::MP3Decoder()  = default;
 MP3Decoder::~MP3Decoder() = default;
 
-bool MP3Decoder::Open(const uint8_t* data, size_t size) {
-    if (!data || size == 0) return false;
-    data_     = data;
-    dataSize_ = size;
-    currentFrame_ = 0;
-
-    // TODO: Initialise mpg123, feed data, read format info
-    format_.sampleRate    = 44100;
-    format_.channels      = 2;
-    format_.bitsPerSample = 32;    // float output
-    format_.blockAlign    = format_.channels * (format_.bitsPerSample / 8);
-
-    return true;
+bool MP3Decoder::Open(const uint8_t* /*data*/, size_t /*size*/) {
+    // Stub: libmpg123 not yet integrated. Return false so the decoder
+    // fallback chain correctly skips this and tries the next format.
+    return false;
 }
 
 int MP3Decoder::Decode(float* buffer, int frameCount) {
@@ -39,4 +30,5 @@ bool MP3Decoder::Seek(int64_t frame) {
 
 UNAudioFormat MP3Decoder::GetFormat()   const { return format_; }
 bool MP3Decoder::SupportsStreaming()     const { return true; }
-int64_t MP3Decoder::GetTotalFrames()    const { return totalFrames_; }
+int64_t MP3Decoder::GetTotalFrames()       const { return totalFrames_; }
+int64_t MP3Decoder::GetCurrentFrame()      const { return currentFrame_; }
