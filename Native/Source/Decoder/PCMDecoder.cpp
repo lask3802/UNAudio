@@ -22,14 +22,22 @@ bool PCMDecoder::parseWavHeader(const uint8_t* data, size_t size) {
     if (std::memcmp(data, "RIFF", 4) != 0) return false;
     if (std::memcmp(data + 8, "WAVE", 4) != 0) return false;
 
-    // Find "fmt " chunk
+    // Two-pass parse: first scan for "fmt ", then for "data".
+    // WAV spec requires "fmt " before "data", but we handle any order
+    // by scanning for fmt first, then restarting the scan for data.
+    bool fmtFound = false;
+
+    // Pass 1: find "fmt " chunk
     size_t pos = 12;
     while (pos + 8 <= size) {
         uint32_t chunkSize = 0;
         std::memcpy(&chunkSize, data + pos + 4, 4);
 
+        // Guard against oversized chunkSize causing wrap-around
+        if (chunkSize > size || pos + 8 > size - chunkSize) break;
+
         if (std::memcmp(data + pos, "fmt ", 4) == 0) {
-            if (pos + 8 + chunkSize > size) return false;
+            if (chunkSize < 16) return false; // fmt chunk must be at least 16 bytes
             const uint8_t* fmt = data + pos + 8;
 
             uint16_t audioFormat = 0;
@@ -43,15 +51,32 @@ bool PCMDecoder::parseWavHeader(const uint8_t* data, size_t size) {
             std::memcpy(&format_.sampleRate, fmt + 4, 4);
             std::memcpy(&format_.bitsPerSample, fmt + 14, 2);
             format_.blockAlign = format_.channels * (format_.bitsPerSample / 8);
+            fmtFound = true;
+            break;
+        }
 
-        } else if (std::memcmp(data + pos, "data", 4) == 0) {
+        pos += 8 + chunkSize;
+        if (chunkSize & 1) pos++; // RIFF chunks are 2-byte aligned
+    }
+
+    if (!fmtFound || format_.blockAlign <= 0) return false;
+
+    // Pass 2: find "data" chunk (restart from beginning of chunk list)
+    pos = 12;
+    while (pos + 8 <= size) {
+        uint32_t chunkSize = 0;
+        std::memcpy(&chunkSize, data + pos + 4, 4);
+
+        // Guard against oversized chunkSize causing wrap-around
+        if (chunkSize > size || pos + 8 > size - chunkSize) break;
+
+        if (std::memcmp(data + pos, "data", 4) == 0) {
             pcmData_ = data + pos + 8;
             pcmDataSize_ = chunkSize;
             if (pcmData_ + pcmDataSize_ > data + size)
                 pcmDataSize_ = size - (pcmData_ - data);
 
-            if (format_.blockAlign > 0)
-                totalFrames_ = static_cast<int64_t>(pcmDataSize_) / format_.blockAlign;
+            totalFrames_ = static_cast<int64_t>(pcmDataSize_) / format_.blockAlign;
             return true;
         }
 

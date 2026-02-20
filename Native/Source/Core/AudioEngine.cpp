@@ -72,10 +72,12 @@ void AudioEngine::Shutdown() {
         if (src) src->state = UNAUDIO_STATE_STOPPED;
     }
 
+    // Stop audio output first — ensures callback won't fire during teardown
     output_.reset();
     mixer_.reset();
     frameAllocator_.reset();
     sources_.clear();
+    pendingUnloads_.clear();  // safe: output is stopped, no in-flight callbacks
 
     // Clear both snapshots
     for (auto& snap : snapshots_) {
@@ -83,6 +85,7 @@ void AudioEngine::Shutdown() {
         snap.count = 0;
     }
     activeSnapshot_.store(0, std::memory_order_relaxed);
+    callbackEpoch_.store(0, std::memory_order_relaxed);
 
     // Drain queues
     { una::AudioCommand cmd; while (commandQueue_.try_pop(cmd)) {} }
@@ -193,8 +196,26 @@ UNAudioSourceHandle AudioEngine::LoadAudio(const uint8_t* data, size_t size,
     return handle;
 }
 
+void AudioEngine::reclaimPendingUnloads() {
+    // Must be called with mutex_ held.
+    // Destroy sources whose grace period has elapsed: the audio thread
+    // has completed at least one full callback since they were removed
+    // from the snapshot, so no in-flight references remain.
+    uint64_t currentEpoch = callbackEpoch_.load(std::memory_order_acquire);
+    pendingUnloads_.erase(
+        std::remove_if(pendingUnloads_.begin(), pendingUnloads_.end(),
+            [currentEpoch](const PendingUnload& pu) {
+                return pu.epoch < currentEpoch;
+            }),
+        pendingUnloads_.end());
+}
+
 void AudioEngine::UnloadAudio(UNAudioSourceHandle handle) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // Reclaim any previously-unloaded sources whose grace period has elapsed
+    reclaimPendingUnloads();
+
     if (isValidHandle(handle)) {
         auto& src = sources_[handle];
         if (src) {
@@ -203,8 +224,13 @@ void AudioEngine::UnloadAudio(UNAudioSourceHandle handle) {
 
             // Free memory budget
             memoryBudget_.free_compressed(src->audioData.size());
+
+            // Move to pending-unload list (RCU grace period: keep alive until
+            // audio thread has completed at least one callback with the updated
+            // snapshot that no longer references this source).
+            uint64_t epoch = callbackEpoch_.load(std::memory_order_acquire);
+            pendingUnloads_.push_back({std::move(src), epoch});
         }
-        sources_[handle].reset();
 
         // Publish updated snapshot (nullptr for this slot)
         publishSnapshot();
@@ -271,6 +297,7 @@ void AudioEngine::SetVolume(UNAudioSourceHandle handle, float volume) {
 }
 
 float AudioEngine::GetVolume(UNAudioSourceHandle handle) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (isValidHandle(handle))
         return sources_[handle]->volume.load(std::memory_order_relaxed);
     return 0.0f;
@@ -283,6 +310,7 @@ void AudioEngine::SetPan(UNAudioSourceHandle handle, float pan) {
 }
 
 float AudioEngine::GetPan(UNAudioSourceHandle handle) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (isValidHandle(handle))
         return sources_[handle]->pan.load(std::memory_order_relaxed);
     return 0.0f;
@@ -295,12 +323,14 @@ void AudioEngine::SetLoop(UNAudioSourceHandle handle, bool loop) {
 }
 
 UNAudioState AudioEngine::GetState(UNAudioSourceHandle handle) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (isValidHandle(handle))
         return sources_[handle]->state.load(std::memory_order_relaxed);
     return UNAUDIO_STATE_STOPPED;
 }
 
 UNAudioClipInfo AudioEngine::GetClipInfo(UNAudioSourceHandle handle) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (isValidHandle(handle))
         return sources_[handle]->clipInfo;
     return {};
@@ -322,7 +352,7 @@ bool AudioEngine::Seek(UNAudioSourceHandle handle, int64_t frame) {
 // ── Engine-level ─────────────────────────────────────────────────
 
 void AudioEngine::SetMasterVolume(float volume) {
-    masterVolume_ = volume;
+    masterVolume_.store(volume, std::memory_order_relaxed);
     if (mixer_) mixer_->SetMasterVolume(volume);
 }
 
@@ -351,6 +381,7 @@ double AudioEngine::GetDspTime() const {
 }
 
 double AudioEngine::GetPlaybackTime(UNAudioSourceHandle handle) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!isValidHandle(handle)) return 0.0;
     auto& src = sources_[handle];
     if (!src || !src->decoder) return 0.0;
@@ -363,6 +394,7 @@ double AudioEngine::GetPlaybackTime(UNAudioSourceHandle handle) const {
 }
 
 int64_t AudioEngine::GetPlaybackFrame(UNAudioSourceHandle handle) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!isValidHandle(handle)) return 0;
     auto& src = sources_[handle];
     if (!src || !src->decoder) return 0;
@@ -402,6 +434,10 @@ void AudioEngine::AudioCallback(float* outputBuffer, int frameCount, int channel
 
     // Advance DSP clock (at the END of callback for accurate interpolation)
     dspClock_.advance(frameCount);
+
+    // Advance RCU epoch so main thread knows it's safe to reclaim
+    // sources that were removed from the snapshot before this callback.
+    callbackEpoch_.fetch_add(1, std::memory_order_release);
 }
 
 void AudioEngine::processCommands() {
@@ -567,6 +603,19 @@ UNAUDIO_EXPORT double UNAudio_GetPlaybackTime(int32_t handle) {
 
 UNAUDIO_EXPORT int64_t UNAudio_GetPlaybackFrame(int32_t handle) {
     return AudioEngine::Instance().GetPlaybackFrame(handle);
+}
+
+UNAUDIO_EXPORT int32_t UNAudio_PollEvent(int32_t* outType, int32_t* outVoiceId,
+                                          int32_t* outParam) {
+    if (!outType || !outVoiceId || !outParam) return 0;
+    una::AudioEvent evt;
+    if (AudioEngine::Instance().PollEvent(evt)) {
+        *outType    = static_cast<int32_t>(evt.type);
+        *outVoiceId = evt.voice_id;
+        *outParam   = evt.param;
+        return 1;
+    }
+    return 0;
 }
 
 } // extern "C"

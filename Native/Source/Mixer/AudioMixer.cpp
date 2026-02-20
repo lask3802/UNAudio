@@ -20,7 +20,7 @@ void AudioMixer::Process(float* outputBuffer, int frameCount, int channels,
     finishedCount_ = 0;
 
     if (!sourceCallback_ || maxHandle <= 0) {
-        peakLevel_ = 0.0f;
+        peakLevel_.store(0.0f, std::memory_order_relaxed);
         return;
     }
 
@@ -87,20 +87,22 @@ void AudioMixer::Process(float* outputBuffer, int frameCount, int channels,
     }
 
     // Apply master volume (SIMD accelerated)
-    if (masterVolume_ != 1.0f) {
-        una::simd::apply_gain(outputBuffer, masterVolume_, totalSamples);
+    float mv = masterVolume_.load(std::memory_order_relaxed);
+    if (mv != 1.0f) {
+        una::simd::apply_gain(outputBuffer, mv, totalSamples);
     }
 
     // Track peak level for metering (SIMD accelerated)
-    peakLevel_ = una::simd::peak_level(outputBuffer, totalSamples);
+    peakLevel_.store(una::simd::peak_level(outputBuffer, totalSamples),
+                     std::memory_order_relaxed);
 }
 
 void AudioMixer::SetMasterVolume(float volume) {
-    masterVolume_ = volume;
+    masterVolume_.store(volume, std::memory_order_relaxed);
 }
 
 float AudioMixer::GetPeakLevel() const {
-    return peakLevel_;
+    return peakLevel_.load(std::memory_order_relaxed);
 }
 
 int AudioMixer::GetFinishedVoiceCount() const {

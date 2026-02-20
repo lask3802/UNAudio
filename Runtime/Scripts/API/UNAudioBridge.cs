@@ -55,7 +55,7 @@ namespace UNAudio
         [DllImport(LibName, EntryPoint = "UNAudio_GetPan")]
         public static extern float GetPan(int handle);
         [DllImport(LibName, EntryPoint = "UNAudio_SetLoop")]
-        public static extern void SetLoop(int handle, bool loop);
+        public static extern void SetLoop(int handle, [MarshalAs(UnmanagedType.I4)] bool loop);
         [DllImport(LibName, EntryPoint = "UNAudio_GetState")]
         public static extern int GetState(int handle);
         [DllImport(LibName, EntryPoint = "UNAudio_Seek")]
@@ -82,6 +82,15 @@ namespace UNAudio
         public static extern double GetPlaybackTime(int handle);
         [DllImport(LibName, EntryPoint = "UNAudio_GetPlaybackFrame")]
         public static extern long GetPlaybackFrame(int handle);
+
+        // ── Event polling ───────────────────────────────────────────
+
+        /// <summary>
+        /// Poll the next audio event. Returns 1 if an event was available, 0 if empty.
+        /// Uses individual out-parameters to avoid struct layout differences.
+        /// </summary>
+        [DllImport(LibName, EntryPoint = "UNAudio_PollEvent")]
+        public static extern int PollEvent(out int eventType, out int voiceId, out int param);
     }
 
     /// <summary>

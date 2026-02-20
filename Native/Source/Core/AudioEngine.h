@@ -118,11 +118,14 @@ private:
     // Process finished voices (audio thread)
     void processFinishedVoices();
 
+    // Destroy sources whose RCU grace period has elapsed (caller holds mutex_)
+    void reclaimPendingUnloads();
+
     std::vector<std::unique_ptr<AudioSource>> sources_;
     std::unique_ptr<AudioMixer> mixer_;
     std::unique_ptr<AudioOutput> output_;
     std::unique_ptr<una::FrameAllocator> frameAllocator_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;             // mutable to allow locking in const methods
     std::atomic<bool> initialized_{false};
     std::atomic<float> masterVolume_{1.0f};
     std::atomic<float> peakLevel_{0.0f};
@@ -133,6 +136,16 @@ private:
     // Audio thread reads active snapshot via atomic index — zero locks.
     SourceSnapshot snapshots_[2];
     std::atomic<int> activeSnapshot_{0};
+
+    // RCU deferred reclamation: sources moved here when unloaded, destroyed
+    // only after the audio thread has completed at least one callback cycle
+    // with the updated snapshot (guarantees no in-flight references).
+    struct PendingUnload {
+        std::unique_ptr<AudioSource> source;
+        uint64_t epoch;   // callbackEpoch_ at time of unload
+    };
+    std::vector<PendingUnload> pendingUnloads_;
+    std::atomic<uint64_t> callbackEpoch_{0};  // incremented at end of each AudioCallback
 
     una::AudioClock dspClock_;
     una::CommandQueue commandQueue_;
@@ -174,6 +187,9 @@ UNAUDIO_EXPORT float    UNAudio_GetPeakLevel(void);
 UNAUDIO_EXPORT double   UNAudio_GetDspTime(void);
 UNAUDIO_EXPORT double   UNAudio_GetPlaybackTime(int32_t handle);
 UNAUDIO_EXPORT int64_t  UNAudio_GetPlaybackFrame(int32_t handle);
+
+UNAUDIO_EXPORT int32_t  UNAudio_PollEvent(int32_t* outType, int32_t* outVoiceId,
+                                           int32_t* outParam);
 
 #ifdef __cplusplus
 }

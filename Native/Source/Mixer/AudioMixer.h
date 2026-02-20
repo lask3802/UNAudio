@@ -6,6 +6,7 @@
 #include <vector>
 #include <cstdint>
 #include <functional>
+#include <atomic>
 
 class AudioDecoder;
 
@@ -51,8 +52,8 @@ public:
 private:
     UNAudioSourceHandle finishedVoices_[MAX_VOICES];
     int finishedCount_ = 0;
-    float masterVolume_ = 1.0f;
-    float peakLevel_    = 0.0f;
+    std::atomic<float> masterVolume_{1.0f};  // written from main thread, read on audio thread
+    std::atomic<float> peakLevel_{0.0f};    // written on audio thread, read from main thread
 
     MixSourceCallback sourceCallback_;
 
