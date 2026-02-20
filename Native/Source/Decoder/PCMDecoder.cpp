@@ -50,6 +50,12 @@ bool PCMDecoder::parseWavHeader(const uint8_t* data, size_t size) {
             std::memcpy(&format_.channels, fmt + 2, 2);
             std::memcpy(&format_.sampleRate, fmt + 4, 4);
             std::memcpy(&format_.bitsPerSample, fmt + 14, 2);
+
+            // Reject unsupported channel counts: mixer supports mono (1)
+            // and stereo (2) only. A malicious WAV claiming 6+ channels
+            // would cause Decode() to write past mixer scratch buffers.
+            if (format_.channels < 1 || format_.channels > 2) return false;
+
             format_.blockAlign = format_.channels * (format_.bitsPerSample / 8);
             fmtFound = true;
             break;
@@ -121,6 +127,10 @@ int PCMDecoder::Decode(float* buffer, int frameCount) {
 
     const int channels = format_.channels;
     const int totalSamples = framesToDecode * channels;
+
+    // Bounds check: ensure we don't read past the PCM data buffer
+    size_t byteEnd = static_cast<size_t>(curFrame + framesToDecode) * format_.blockAlign;
+    if (byteEnd > pcmDataSize_) return 0;
 
     if (isFloat_ && format_.bitsPerSample == 32) {
         // 32-bit float PCM — direct copy
