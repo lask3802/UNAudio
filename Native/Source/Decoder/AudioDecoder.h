@@ -28,6 +28,10 @@ public:
 
     /// Total number of frames in the audio clip (0 if unknown).
     virtual int64_t GetTotalFrames() const = 0;
+
+    /// Current decode position in frames.
+    /// Thread-safe (atomic or read-only after setup).
+    virtual int64_t GetCurrentFrame() const = 0;
 };
 
 #endif // UNAUDIO_AUDIO_DECODER_H

@@ -1,0 +1,181 @@
+#include "PCMDecoder.h"
+#include <cstring>
+#include <algorithm>
+
+// WAV/RIFF stores all multi-byte values in little-endian byte order.
+// The 16-bit and float decode paths use reinterpret_cast, which requires
+// the host CPU to also be little-endian. All Unity target platforms
+// (x86, x64, ARM, ARM64, WASM) are little-endian, so this is safe.
+// The 24-bit path reads individual bytes and is endian-independent.
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+    #error "PCMDecoder: WAV/RIFF is little-endian; big-endian host not supported"
+#endif
+
+PCMDecoder::PCMDecoder()  = default;
+PCMDecoder::~PCMDecoder() = default;
+
+// Minimal WAV header parser (RIFF/WAVE, PCM format)
+bool PCMDecoder::parseWavHeader(const uint8_t* data, size_t size) {
+    if (size < 44) return false;
+
+    // Check RIFF header
+    if (std::memcmp(data, "RIFF", 4) != 0) return false;
+    if (std::memcmp(data + 8, "WAVE", 4) != 0) return false;
+
+    // Two-pass parse: first scan for "fmt ", then for "data".
+    // WAV spec requires "fmt " before "data", but we handle any order
+    // by scanning for fmt first, then restarting the scan for data.
+    bool fmtFound = false;
+
+    // Pass 1: find "fmt " chunk
+    size_t pos = 12;
+    while (pos + 8 <= size) {
+        uint32_t chunkSize = 0;
+        std::memcpy(&chunkSize, data + pos + 4, 4);
+
+        // Guard against oversized chunkSize causing wrap-around
+        if (chunkSize > size || pos + 8 > size - chunkSize) break;
+
+        if (std::memcmp(data + pos, "fmt ", 4) == 0) {
+            if (chunkSize < 16) return false; // fmt chunk must be at least 16 bytes
+            const uint8_t* fmt = data + pos + 8;
+
+            uint16_t audioFormat = 0;
+            std::memcpy(&audioFormat, fmt, 2);
+
+            // 1 = PCM int, 3 = IEEE float
+            if (audioFormat != 1 && audioFormat != 3) return false;
+            isFloat_ = (audioFormat == 3);
+
+            std::memcpy(&format_.channels, fmt + 2, 2);
+            std::memcpy(&format_.sampleRate, fmt + 4, 4);
+            std::memcpy(&format_.bitsPerSample, fmt + 14, 2);
+
+            // Reject unsupported channel counts: mixer supports mono (1)
+            // and stereo (2) only. A malicious WAV claiming 6+ channels
+            // would cause Decode() to write past mixer scratch buffers.
+            if (format_.channels < 1 || format_.channels > 2) return false;
+
+            format_.blockAlign = format_.channels * (format_.bitsPerSample / 8);
+            fmtFound = true;
+            break;
+        }
+
+        pos += 8 + chunkSize;
+        if (chunkSize & 1) pos++; // RIFF chunks are 2-byte aligned
+    }
+
+    if (!fmtFound || format_.blockAlign <= 0) return false;
+
+    // Pass 2: find "data" chunk (restart from beginning of chunk list)
+    pos = 12;
+    while (pos + 8 <= size) {
+        uint32_t chunkSize = 0;
+        std::memcpy(&chunkSize, data + pos + 4, 4);
+
+        // Guard against oversized chunkSize causing wrap-around
+        if (chunkSize > size || pos + 8 > size - chunkSize) break;
+
+        if (std::memcmp(data + pos, "data", 4) == 0) {
+            pcmData_ = data + pos + 8;
+            pcmDataSize_ = chunkSize;
+            if (pcmData_ + pcmDataSize_ > data + size)
+                pcmDataSize_ = size - (pcmData_ - data);
+
+            totalFrames_ = static_cast<int64_t>(pcmDataSize_) / format_.blockAlign;
+            return true;
+        }
+
+        pos += 8 + chunkSize;
+        if (chunkSize & 1) pos++; // RIFF chunks are 2-byte aligned
+    }
+
+    return false;
+}
+
+bool PCMDecoder::Open(const uint8_t* data, size_t size) {
+    if (!data || size == 0) return false;
+    data_ = data;
+    dataSize_ = size;
+    currentFrame_.store(0, std::memory_order_relaxed);
+
+    // Try WAV format first
+    if (parseWavHeader(data, size)) {
+        return true;
+    }
+
+    // Fallback: treat as raw 16-bit stereo 44.1kHz PCM
+    format_.sampleRate    = 44100;
+    format_.channels      = 2;
+    format_.bitsPerSample = 16;
+    format_.blockAlign    = format_.channels * (format_.bitsPerSample / 8);
+    isFloat_ = false;
+    pcmData_ = data;
+    pcmDataSize_ = size;
+    totalFrames_ = static_cast<int64_t>(pcmDataSize_) / format_.blockAlign;
+
+    return true;
+}
+
+int PCMDecoder::Decode(float* buffer, int frameCount) {
+    const int64_t curFrame = currentFrame_.load(std::memory_order_relaxed);
+    if (!pcmData_ || curFrame >= totalFrames_) return 0;
+
+    int64_t framesAvailable = totalFrames_ - curFrame;
+    int framesToDecode = static_cast<int>(
+        std::min(static_cast<int64_t>(frameCount), framesAvailable));
+
+    const int channels = format_.channels;
+    const int totalSamples = framesToDecode * channels;
+
+    // Bounds check: ensure we don't read past the PCM data buffer
+    size_t byteEnd = static_cast<size_t>(curFrame + framesToDecode) * format_.blockAlign;
+    if (byteEnd > pcmDataSize_) return 0;
+
+    if (isFloat_ && format_.bitsPerSample == 32) {
+        // 32-bit float PCM — direct copy
+        size_t byteOffset = static_cast<size_t>(curFrame) * format_.blockAlign;
+        const float* src = reinterpret_cast<const float*>(pcmData_ + byteOffset);
+        std::memcpy(buffer, src, totalSamples * sizeof(float));
+
+    } else if (!isFloat_ && format_.bitsPerSample == 16) {
+        // 16-bit int PCM — convert to float
+        size_t byteOffset = static_cast<size_t>(curFrame) * format_.blockAlign;
+        const int16_t* src = reinterpret_cast<const int16_t*>(pcmData_ + byteOffset);
+        constexpr float scale = 1.0f / 32768.0f;
+        for (int i = 0; i < totalSamples; ++i)
+            buffer[i] = static_cast<float>(src[i]) * scale;
+
+    } else if (!isFloat_ && format_.bitsPerSample == 24) {
+        // 24-bit int PCM — convert to float (byte-level access: endian-independent)
+        size_t byteOffset = static_cast<size_t>(curFrame) * format_.blockAlign;
+        const uint8_t* src = pcmData_ + byteOffset;
+        constexpr float scale = 1.0f / 8388608.0f; // 2^23
+        for (int i = 0; i < totalSamples; ++i) {
+            int32_t sample = (static_cast<int32_t>(src[i * 3 + 2]) << 24) |
+                             (static_cast<int32_t>(src[i * 3 + 1]) << 16) |
+                             (static_cast<int32_t>(src[i * 3 + 0]) << 8);
+            sample >>= 8; // sign extend
+            buffer[i] = static_cast<float>(sample) * scale;
+        }
+
+    } else {
+        // Unsupported format — output silence
+        std::memset(buffer, 0, totalSamples * sizeof(float));
+    }
+
+    currentFrame_.store(curFrame + framesToDecode, std::memory_order_relaxed);
+    return framesToDecode;
+}
+
+bool PCMDecoder::Seek(int64_t frame) {
+    if (frame < 0) frame = 0;
+    if (frame > totalFrames_) frame = totalFrames_;
+    currentFrame_.store(frame, std::memory_order_relaxed);
+    return true;
+}
+
+UNAudioFormat PCMDecoder::GetFormat()      const { return format_; }
+bool PCMDecoder::SupportsStreaming()        const { return false; }
+int64_t PCMDecoder::GetTotalFrames()       const { return totalFrames_; }
+int64_t PCMDecoder::GetCurrentFrame()      const { return currentFrame_.load(std::memory_order_relaxed); }

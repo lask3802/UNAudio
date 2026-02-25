@@ -1,0 +1,1308 @@
+# UNAudio — Unity Native Low-Latency Audio Engine
+
+## 1. 專案目標
+
+打造一個繞過 Unity 內建 AudioSource/AudioClip 系統的**原生低延遲音訊引擎**，解決 Unity 預設音訊系統在以下方面的不足：
+
+| 痛點 | Unity 預設 | UNAudio 目標 |
+|------|-----------|-------------|
+| 輸出延遲 | 約 46–92 ms（DSP buffer 1024–2048 samples） | < 10 ms（buffer 128–256 samples） |
+| 解碼延遲 | `AudioClip.LoadType` 對 streaming 友善但 latency 不可控 | Compressed-in-memory + lock-free ring buffer decode |
+| 混音靈活度 | 單一 AudioMixer，不可從 native 端直接存取 | 自建 Mixer graph，可程式化控制 |
+| Asset Pipeline | 與 Unity importer 緊耦合 | 獨立 import pipeline，支援 Editor 即時預覽 |
+| 除錯可見性 | Profiler 資訊有限 | 自訂 Editor window + real-time waveform/debug overlay |
+
+---
+
+## 2. 目標平台與 Native Audio Backend
+
+| 平台 | Native API | 備註 |
+|------|-----------|------|
+| **Windows** | WASAPI (Exclusive/Shared) | 優先 Exclusive mode 取得最低延遲 |
+| **Android** | AAudio (API 26+) / OpenSL ES (fallback) | AAudio performance mode = LowLatency |
+| **iOS** | Core Audio (Audio Unit) | `kAudioUnitSubType_RemoteIO` |
+| **macOS** | Core Audio (Audio Unit) | 支援 Editor 開發測試 |
+| **Linux** | PulseAudio / ALSA | 僅供 Editor 開發用 |
+
+> **Phase 1** 先完成 Windows + Android；Phase 2 加入 iOS/macOS；Linux 為開發便利提供基本支援。
+
+---
+
+## 3. 架構總覽
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    Unity C# Layer                         │
+│                                                          │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ UNAudioMgr  │  │ UNAudioSource│  │ UNAudioMixer   │  │
+│  │ (Singleton)  │  │ (Component)  │  │ (ScriptableObj)│  │
+│  └──────┬───────┘  └──────┬───────┘  └───────┬────────┘  │
+│         │                 │                   │           │
+│         ▼                 ▼                   ▼           │
+│  ┌──────────────────────────────────────────────────┐    │
+│  │           C# Interop Layer (P/Invoke)             │    │
+│  │     Marshal / NativeArray<T> / unsafe pinning     │    │
+│  └──────────────────────┬───────────────────────────┘    │
+└─────────────────────────┼────────────────────────────────┘
+                          │ C ABI (cdecl)
+┌─────────────────────────┼────────────────────────────────┐
+│                  Native C++ Layer                         │
+│                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐  │
+│  │  Engine   │  │  Codec   │  │  Mixer   │  │  DSP    │  │
+│  │  Core     │  │  Layer   │  │  Graph   │  │  Chain  │  │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬────┘  │
+│       │              │             │              │       │
+│       ▼              ▼             ▼              ▼       │
+│  ┌──────────────────────────────────────────────────┐    │
+│  │         Platform Audio Backend (PAL)              │    │
+│  │   WASAPI │ AAudio │ CoreAudio │ PulseAudio       │    │
+│  └──────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 3.1 分層職責
+
+| 層級 | 職責 | 語言 |
+|------|------|------|
+| **Unity C# Layer** | MonoBehaviour 整合、Inspector UI、Asset 管理、Editor 工具 | C# |
+| **Interop Layer** | P/Invoke binding、memory marshalling、callback delegate | C# (unsafe) |
+| **Engine Core** | 生命週期管理、voice allocation、command queue | C++ |
+| **Codec Layer** | 壓縮音訊解碼（Vorbis / Opus / ADPCM） | C++ |
+| **Mixer Graph** | 多聲道混音、bus routing、master output | C++ |
+| **DSP Chain** | 可擴展效果處理節點（Volume、Pan、Filter...） | C++ |
+| **Platform Audio Backend (PAL)** | 各平台原生音訊輸出 | C++ / platform API |
+
+---
+
+## 4. Asset Pipeline
+
+### 4.1 自訂 Audio Asset：`UNAudioClip`
+
+```
+UNAudioClip (.unac)
+├── Header (magic, version, format metadata)
+│   ├── sample_rate     : uint32
+│   ├── channels        : uint8
+│   ├── codec           : enum { PCM16, ADPCM, Vorbis, Opus }
+│   ├── total_samples   : uint64
+│   ├── compressed_size : uint64
+│   └── loop_points     : { start, end } (samples)
+├── Compressed Data Block
+│   └── codec-specific compressed payload
+└── Optional Seek Table (for Vorbis/Opus random access)
+```
+
+### 4.2 Import Pipeline
+
+```
+原始音檔 (.wav/.ogg/.mp3/.flac)
+        │
+        ▼
+┌─────────────────────────┐
+│  UNAudioImporter        │  ← Unity AssetPostprocessor / ScriptedImporter
+│  (Editor only)          │
+│                         │
+│  1. 讀取原始音訊        │
+│  2. Resample (if needed)│
+│  3. 編碼為目標 codec    │
+│  4. 生成 .unac asset    │
+│  5. 建立 seek table     │
+└────────┬────────────────┘
+         ▼
+  Assets/Audio/*.unac      ← 可被 Unity 版控、Addressables 管理
+```
+
+**關鍵設計決策：**
+
+- 使用 `ScriptedImporter` 註冊 `.unac` 副檔名，讓 Unity Editor 原生識別
+- Import settings 可在 Inspector 中調整（目標 codec、品質、sample rate）
+- 支援 **Import-time encode**：原始檔留在專案中，`.unac` 為 import 產物
+- 也支援 **Pre-encoded import**：直接匯入已編碼的 `.unac` 檔案
+
+### 4.3 Codec 選擇策略
+
+| 用途 | 建議 Codec | 理由 |
+|------|-----------|------|
+| **SFX（短音效）** | ADPCM 或 PCM16 | 解碼極快、零延遲，檔案較小 |
+| **音樂 / BGM** | Vorbis (OGG) | 壓縮率高、品質好、開源免費 |
+| **語音 / 對話** | Opus | 最佳低位元率品質、低延遲設計 |
+| **大量重複音效** | ADPCM | 記憶體效率與解碼速度最佳平衡 |
+
+### 4.4 記憶體載入策略：Compressed In Memory
+
+```
+UNAudioClip 載入流程：
+
+1. Load Phase (main thread or async)
+   ├── 從 disk 讀取 .unac 完整檔案
+   ├── 壓縮資料保留在 native heap（不解壓）
+   └── 建立 codec decoder context
+
+2. Play Phase (audio thread)
+   ├── 從 compressed buffer 逐 frame 解碼
+   ├── 解碼輸出至 per-voice PCM ring buffer
+   └── Mixer 從 ring buffer 拉取混音
+
+記憶體佈局：
+┌──────────────────────────────────────┐
+│          Native Heap                  │
+│                                      │
+│  ┌─────────────────────┐             │
+│  │ Compressed Data     │  ← 常駐記憶體 │
+│  │ (Vorbis/Opus/ADPCM) │             │
+│  └─────────────────────┘             │
+│                                      │
+│  ┌─────────────────────┐             │
+│  │ PCM Decode Buffer   │  ← 每個 voice │
+│  │ (Ring Buffer, ~4KB) │    獨立 buffer │
+│  └─────────────────────┘             │
+└──────────────────────────────────────┘
+```
+
+### 4.5 Per-Platform Import Override
+
+不同平台對音訊品質與檔案大小的需求不同，Import Settings 需支援 per-platform override：
+
+```
+┌─ UNAudioClip Import Settings ─────────────────────┐
+│                                                     │
+│  Default:    Codec: Vorbis   Quality: 70   SR: 48k │
+│                                                     │
+│  ┌─ Platform Override ───────────────────────────┐  │
+│  │ ☑ Android:  Codec: Vorbis   Quality: 50  SR: 44.1k │
+│  │ ☑ iOS:      Codec: Opus     Quality: 64  SR: 44.1k │
+│  │ ☐ WebGL:    (use default)                     │  │
+│  └───────────────────────────────────────────────┘  │
+│                                                     │
+│  Force Mono: ☐   Preload: ☑   Load Strategy: ▼    │
+│  [Compressed In Memory ▼]                          │
+└─────────────────────────────────────────────────────┘
+```
+
+**設計要點：**
+- 每個平台可獨立覆蓋 codec、quality、sample rate
+- Build 時只打包該平台的 variant
+- Inspector UI 提供 platform tab（類似 Unity TextureImporter 模式）
+
+### 4.6 Addressables 整合
+
+```csharp
+// 支援 AssetReference 做延遲載入
+[Serializable]
+public class UNAudioClipReference : AssetReferenceT<UNAudioClip>
+{
+    public UNAudioClipReference(string guid) : base(guid) { }
+}
+
+// 使用範例
+public class BGMController : MonoBehaviour
+{
+    [SerializeField] private UNAudioClipReference bgmRef;
+
+    async void Start()
+    {
+        var clip = await bgmRef.LoadAssetAsync<UNAudioClip>().Task;
+        await clip.LoadAsync();  // 載入 native compressed data
+        UNAudioManager.Instance.Play(clip, new UNPlayParams { Bus = UNBusId.Music, Loop = true });
+    }
+}
+```
+
+**載入流程：**
+1. Addressables 負責從 bundle 取得 `UNAudioClip` ScriptableObject
+2. `UNAudioClip.LoadAsync()` 將壓縮資料送入 native heap
+3. 兩階段可獨立控制：asset metadata（輕量）vs audio data（重量）
+
+---
+
+## 5. Engine Core 設計
+
+### 5.1 Threading Model
+
+```
+┌─────────────┐     Command Queue      ┌──────────────┐
+│ Main Thread  │ ──────────────────────▶│ Audio Thread  │
+│ (C# / Unity) │  (lock-free SPSC)     │ (Native)      │
+└─────────────┘                        └──────┬───────┘
+                                              │
+       ┌──────────────────────────────────────┤
+       │                                      │
+       ▼                                      ▼
+┌──────────────┐                     ┌──────────────┐
+│ Decode Thread │                     │ Platform     │
+│ (per codec   │                     │ Audio Output │
+│  or pooled)  │                     │ Callback     │
+└──────────────┘                     └──────────────┘
+```
+
+**核心原則：Audio Thread 零阻塞（No Allocation, No Lock, No System Call）**
+
+| 執行緒 | 職責 | 阻塞限制 |
+|--------|------|---------|
+| **Main Thread** | 發送 command（Play/Stop/SetParam）、asset 載入 | 可阻塞 |
+| **Audio Thread** | 混音、DSP 處理、輸出 buffer 填充 | **禁止阻塞** |
+| **Decode Thread(s)** | 解壓縮音訊資料，填充 per-voice ring buffer | 可阻塞（I/O） |
+| **Event Thread** | 回送 event 至 C#（播放完成、loop、marker） | 可阻塞 |
+
+### 5.1.1 Audio Thread Memory Pool（Frame Allocator）
+
+Audio Thread 禁止 `malloc`/`free`，所有暫存 buffer 從 pre-allocated pool 取得：
+
+```cpp
+// 每個 audio callback 開始時 reset，結束時全部回收
+class FrameAllocator {
+    uint8_t* base_;
+    size_t   capacity_;  // e.g. 256 KB
+    size_t   offset_;
+
+public:
+    // O(1) allocation，無 syscall
+    void* alloc(size_t bytes, size_t align = 16) {
+        offset_ = (offset_ + align - 1) & ~(align - 1);
+        void* ptr = base_ + offset_;
+        offset_ += bytes;
+        assert(offset_ <= capacity_);
+        return ptr;
+    }
+
+    // 每 frame 開始時 reset（整塊回收）
+    void reset() { offset_ = 0; }
+};
+```
+
+**用途：**
+- DSP chain 的中間 buffer（mix buffer、temp buffer）
+- Sample rate conversion 暫存
+- SIMD 對齊的 scratch buffer
+
+**大小估算：** 64 voices × 256 samples × 2ch × 4 bytes + DSP overhead ≈ 192 KB，配置 256 KB 足夠。
+
+### 5.2 Command Queue（Main → Audio Thread）
+
+```cpp
+// Lock-free SPSC ring buffer
+struct AudioCommand {
+    enum Type : uint8_t {
+        Play, Stop, Pause, Resume,
+        SetVolume, SetPitch, SetPan,
+        SetBus, FadeVolume,
+        StopAll, Seek
+    };
+    Type     type;
+    uint32_t voice_id;
+    float    param0;
+    float    param1;
+    float    duration;       // for fades
+    uint64_t schedule_sample; // sample-accurate scheduling (0 = immediate)
+};
+```
+
+### 5.2.1 Sample-Accurate Scheduling
+
+遊戲音訊（尤其節奏遊戲）需要精確到 sample 的觸發時機，不能只靠 frame boundary：
+
+```
+Audio Callback Buffer (256 samples)
+┌──────────────────────────────────────────┐
+│ sample 0          sample 100   sample 255│
+│ ↑                 ↑                      │
+│ Voice A starts    Voice B starts         │
+│ here              here (100 samples late)│
+└──────────────────────────────────────────┘
+```
+
+```csharp
+// C# API
+public struct UNPlayParams
+{
+    // ... existing fields ...
+    public double ScheduleDspTime;  // 0 = immediate, >0 = 絕對 DSP 時間
+}
+
+// 使用範例（節奏遊戲）
+double nextBeat = UNAudioManager.Instance.DspTime + beatInterval;
+UNAudioManager.Instance.Play(hitClip, new UNPlayParams {
+    ScheduleDspTime = nextBeat
+});
+```
+
+**實作方式：**
+- `AudioCommand.schedule_sample` 紀錄絕對 sample position
+- Audio callback 中比對當前 sample counter，在 buffer 內精確偏移處開始寫入
+- 精度可達 1 sample（@ 48kHz ≈ 0.02 ms）
+
+### 5.2.2 Batch Command 機制
+
+高頻場景（爆炸 + 10+ 碎片音效）逐條 enqueue 有 atomic 開銷：
+
+```cpp
+// 批次提交，僅需一次 atomic store
+class CommandBatch {
+    AudioCommand commands_[MAX_BATCH];
+    uint32_t count_ = 0;
+public:
+    void add(AudioCommand cmd) { commands_[count_++] = cmd; }
+    void submit(CommandQueue& queue) {
+        queue.enqueue_batch(commands_, count_);
+        count_ = 0;
+    }
+};
+```
+
+```csharp
+// C# API
+using (var batch = UNAudioManager.Instance.BeginBatch())
+{
+    for (int i = 0; i < 10; i++)
+        batch.Play(debrisClips[i], debrisParams);
+}  // Dispose 自動 submit
+```
+
+### 5.3 Voice Pool
+
+```
+Voice Pool (固定大小，如 64 voices)
+┌─────┬─────┬─────┬─────┬─────┬─────┐
+│ V0  │ V1  │ V2  │ ... │ V62 │ V63 │
+└─────┴─────┴─────┴─────┴─────┴─────┘
+  │
+  ▼
+Voice State:
+  ├── clip_ref        → 指向 compressed data
+  ├── decoder_state   → codec-specific 解碼狀態
+  ├── ring_buffer     → PCM output (decode → audio thread)
+  ├── playback_pos    → 目前播放位置 (samples)
+  ├── volume / pitch / pan
+  ├── bus_id          → 輸出至哪個 mixer bus
+  ├── state           → { Free, Playing, Paused, Stopping }
+  └── priority        → voice stealing 優先序
+```
+
+**Voice Stealing 策略：**
+1. 優先回收 `Free` 狀態的 voice
+2. 其次回收最低 priority 的 voice
+3. 同 priority 則回收 volume 最小的 voice
+4. 提供 `VoiceStealCallback` 讓 C# 層可自訂邏輯
+
+### 5.3.1 Virtual Voices
+
+超過 voice pool 上限的聲音不應直接丟棄，而是進入 **virtual** 狀態：
+
+```
+Physical Voice Pool (64 slots)     Virtual Voice List (無上限)
+┌────┬────┬────┬───┬────┐         ┌────┬────┬────┐
+│ V0 │ V1 │ V2 │...│V63 │         │ W0 │ W1 │ W2 │ ...
+│ ▶  │ ▶  │ ▶  │   │ ▶  │         │ 👻 │ 👻 │ 👻 │
+└────┴────┴────┴───┴────┘         └────┴────┴────┘
+  ↑ 有 decoder + PCM buffer          ↑ 僅追蹤 playback_pos
+  ↑ 實際產生音訊輸出                   ↑ 不消耗 audio 資源
+```
+
+**行為：**
+- Virtual voice 持續推進 `playback_pos`（根據 pitch 計算），但不解碼也不混音
+- 當 physical voice 釋出時，依 priority 排序，最高者從 virtual → physical
+- 恢復時從正確的 `playback_pos` 重新初始化 decoder（利用 seek table）
+- Virtual voice 到達 clip 結尾且非 loop 時自動移除
+
+```csharp
+// C# 查詢
+public bool IsVirtual(UNVoiceHandle handle);  // true = 被 virtualized
+public int VirtualVoiceCount { get; }
+```
+
+### 5.3.2 Pre-decoded Short Clip Cache
+
+短音效（< 1 秒）可選擇完整解壓到 PCM，免去 per-voice decoder 開銷：
+
+```
+載入策略決策樹：
+
+                clip.Duration
+                    │
+          ┌─────────┼─────────┐
+          │         │         │
+      < 1.0s    1–10s      > 10s
+          │         │         │
+          ▼         ▼         ▼
+    DecompressOnLoad  CompressedInMemory  Streaming*
+    (完整 PCM cache)  (per-voice decode)  (未來擴展)
+
+    * Streaming 留作未來超長音檔使用
+```
+
+```cpp
+struct ClipData {
+    enum LoadType : uint8_t {
+        DecompressOnLoad,   // PCM 常駐，多 voice 共享同一 buffer
+        CompressedInMemory, // 壓縮常駐，per-voice decode
+    };
+
+    LoadType    load_type;
+    const void* data;          // PCM or compressed
+    size_t      data_size;
+    uint32_t    ref_count;     // 共享的引用計數
+};
+```
+
+**效能優勢：**
+- `DecompressOnLoad` 的 voice 不需要 decoder context 和 ring buffer
+- 多個 voice 播放同一短 clip 時共享同一塊 PCM，只需各自維護 `playback_pos`
+- 消除 decode thread 排程開銷
+
+### 5.4 Mixer Graph
+
+```
+                ┌─────────┐
+                │ Master  │ → Platform Output
+                │  Bus    │
+                └────┬────┘
+                     │
+         ┌───────────┼───────────┐
+         │           │           │
+    ┌────┴────┐ ┌────┴────┐ ┌───┴─────┐
+    │  Music  │ │   SFX   │ │  Voice  │
+    │  Bus    │ │   Bus   │ │  Bus    │
+    └────┬────┘ └────┬────┘ └────┬────┘
+         │           │           │
+     ┌───┴───┐   ┌───┴───┐   ┌──┴──┐
+     │ V0,V1 │   │V2..V10│   │V11  │
+     └───────┘   └───────┘   └─────┘
+
+每個 Bus：
+  ├── volume (float, 0.0–1.0)
+  ├── mute (bool)
+  ├── DSP chain (linked list of effects)
+  ├── duck_target → side-chain source bus
+  └── child buses / voices
+```
+
+### 5.4.1 Ducking / Side-chain
+
+遊戲最常見需求：對話播放時自動壓低音樂音量。
+
+```
+┌─────────┐  side-chain signal  ┌─────────┐
+│  Voice  │ ──────────────────▶ │  Music  │
+│  Bus    │  (envelope detect)  │  Bus    │
+└─────────┘                     └─────────┘
+                                     │
+                                  duck volume
+                                  by -12 dB
+```
+
+```cpp
+struct DuckConfig {
+    uint8_t  source_bus;      // 觸發 ducking 的 bus
+    float    duck_volume;     // 壓低到多少 (e.g. 0.25 = -12 dB)
+    float    attack_ms;       // 壓低速度 (e.g. 50 ms)
+    float    release_ms;      // 恢復速度 (e.g. 500 ms)
+    float    threshold;       // source bus 超過此 level 才觸發
+};
+```
+
+```csharp
+// C# API
+UNAudioManager.Instance.SetBusDucking(
+    targetBus: UNBusId.Music,
+    sourceBus: UNBusId.Voice,
+    duckVolume: 0.25f,
+    attackMs: 50f,
+    releaseMs: 500f
+);
+```
+
+### 5.4.2 Runtime Sample Rate Conversion
+
+不同 clip 可能有不同 sample rate，mixer 需要統一到 output sample rate：
+
+```
+Voice (44.1 kHz clip)  ──→ SRC ──→ Mixer (48 kHz output)
+Voice (22.05 kHz clip) ──→ SRC ──→ Mixer (48 kHz output)
+Voice (48 kHz clip)    ────────→ Mixer (no conversion needed)
+```
+
+```cpp
+// 線性插值 SRC（低品質但極快，適合 SFX）
+// Catmull-Rom 4-point SRC（中品質，適合音樂）
+enum SRCQuality : uint8_t {
+    SRC_Linear,      // 2-point, ~0 overhead
+    SRC_CatmullRom,  // 4-point, minimal overhead
+    SRC_Sinc,        // windowed sinc, highest quality (optional)
+};
+```
+
+**設計：** 每個 voice 在 decode 後、mixer 前進行 SRC。大多數情況下 clip 與 output 同 sample rate，SRC 為 passthrough（零開銷）。
+
+---
+
+## 6. C# Public API 設計
+
+### 6.1 核心 API
+
+```csharp
+// === Singleton Manager ===
+public class UNAudioManager : MonoBehaviour
+{
+    public static UNAudioManager Instance { get; }
+
+    // 初始化（自動在 Awake 呼叫，或手動）
+    public void Initialize(UNAudioConfig config);
+    public void Shutdown();
+
+    // 播放
+    public UNVoiceHandle Play(UNAudioClip clip, UNPlayParams param = default);
+    public void PlayOneShot(UNAudioClip clip, float volume = 1f);  // fire-and-forget
+    public void Stop(UNVoiceHandle handle, float fadeOut = 0f);
+    public void Pause(UNVoiceHandle handle);
+    public void Resume(UNVoiceHandle handle);
+    public void StopAll(float fadeOut = 0f);
+
+    // 參數控制
+    public void SetVolume(UNVoiceHandle handle, float volume);
+    public void SetPitch(UNVoiceHandle handle, float pitch);
+    public void SetPan(UNVoiceHandle handle, float pan);  // -1.0 ~ 1.0
+    public void FadeTo(UNVoiceHandle handle, float targetVol, float duration);
+    public void Seek(UNVoiceHandle handle, float timeSeconds);  // 設定播放位置
+
+    // Bus 控制
+    public void SetBusVolume(UNBusId bus, float volume);
+    public void SetBusMute(UNBusId bus, bool mute);
+    public void SetBusDucking(UNBusId targetBus, UNBusId sourceBus,
+                              float duckVolume, float attackMs, float releaseMs);
+
+    // Batch 控制
+    public UNCommandBatch BeginBatch();  // IDisposable，Dispose 時 submit
+
+    // DSP 時間（sample-accurate scheduling 用）
+    public double DspTime { get; }        // 當前 DSP 時鐘（秒）
+    public uint64 DspSamplePosition { get; } // 當前絕對 sample 位置
+
+    // 查詢
+    public bool IsPlaying(UNVoiceHandle handle);
+    public bool IsVirtual(UNVoiceHandle handle);
+    public float GetPlaybackPosition(UNVoiceHandle handle); // seconds
+    public int ActiveVoiceCount { get; }
+    public int VirtualVoiceCount { get; }
+
+    // Event 回呼
+    public event Action<UNVoiceHandle> OnVoiceFinished;   // 播放完成
+    public event Action<UNVoiceHandle> OnLoopPoint;       // loop 回到起點
+    public event Action<UNVoiceHandle, int> OnMarker;     // 自訂 marker
+}
+
+// === Voice Handle（值型別，避免 GC）===
+public readonly struct UNVoiceHandle : IEquatable<UNVoiceHandle>
+{
+    internal readonly uint Id;        // voice slot index
+    internal readonly uint Generation; // 防止 dangling reference
+    public bool IsValid { get; }
+    public static readonly UNVoiceHandle Invalid;
+}
+
+// === Play 參數 ===
+public struct UNPlayParams
+{
+    public float  Volume;           // 0.0–1.0, default 1.0
+    public float  Pitch;            // 0.5–2.0, default 1.0
+    public float  Pan;              // -1.0–1.0, default 0.0
+    public bool   Loop;             // default false
+    public int    Priority;         // 0 = lowest, default 128
+    public UNBusId Bus;             // default = SFX
+    public float  FadeIn;           // seconds, default 0
+    public float  StartTime;        // seconds, default 0
+    public double ScheduleDspTime;  // 0 = immediate, >0 = sample-accurate 排程
+}
+```
+
+### 6.2 UNAudioSource Component
+
+```csharp
+/// MonoBehaviour wrapper，可掛在 GameObject 上，提供 Inspector 操作介面
+[AddComponentMenu("UNAudio/UNAudio Source")]
+public class UNAudioSource : MonoBehaviour
+{
+    [SerializeField] private UNAudioClip clip;
+    [SerializeField] private UNPlayParams defaultParams;
+    [SerializeField] private bool playOnAwake;
+
+    private UNVoiceHandle currentHandle;
+
+    public void Play();
+    public void Stop(float fadeOut = 0f);
+    public void Pause();
+    public void Resume();
+
+    public float Volume { get; set; }
+    public float Pitch { get; set; }
+    public bool IsPlaying { get; }
+}
+```
+
+### 6.3 UNAudioClip（ScriptableObject）
+
+```csharp
+/// 對應 .unac 檔案的 Unity Asset 表示
+public class UNAudioClip : ScriptableObject
+{
+    // Import metadata (read-only in Inspector)
+    public int    SampleRate  { get; }
+    public int    Channels    { get; }
+    public float  Duration    { get; }  // seconds
+    public UNCodec Codec      { get; }
+    public long   MemorySize  { get; }  // compressed size in bytes
+
+    // Native handle (internal)
+    internal IntPtr NativeHandle { get; }
+
+    // 載入控制
+    public bool   IsLoaded    { get; }
+    public void   Load();               // 同步載入
+    public Task   LoadAsync();           // 非同步載入
+    public void   Unload();
+}
+```
+
+---
+
+## 6.4 Event / Callback 系統
+
+Audio thread 不可直接呼叫 C# callback（會 GC），需經由 event queue 回送至 main thread：
+
+```
+Audio Thread                    Event Queue (SPSC)           Main Thread
+┌──────────┐    enqueue event   ┌──────────────┐   dequeue   ┌──────────────┐
+│ 偵測到    │ ─────────────────▶│ VoiceFinished│ ──────────▶│ OnVoiceFinished│
+│ clip 結束 │                   │ LoopPoint    │            │ OnLoopPoint    │
+│ loop 回繞 │                   │ Marker       │            │ OnMarker       │
+│ marker hit│                   │ DeviceLost   │            │ OnDeviceLost   │
+└──────────┘                    └──────────────┘            └──────────────┘
+                                                             ↑
+                                                     UNAudioManager.Update()
+                                                     中 drain event queue
+```
+
+```cpp
+struct AudioEvent {
+    enum Type : uint8_t {
+        VoiceFinished,   // voice 播放完畢（非 loop）
+        LoopPoint,       // loop 回繞
+        Marker,          // 到達自訂 marker point
+        DeviceLost,      // 音訊裝置斷開
+        DeviceRestored,  // 音訊裝置恢復
+        BufferUnderrun,  // decode 跟不上（debug 用）
+    };
+    Type     type;
+    uint32_t voice_id;
+    uint32_t generation;
+    int32_t  param;      // marker index 等額外資訊
+};
+```
+
+**使用場景：**
+- 對話系統：`OnVoiceFinished` 觸發下一句台詞
+- 節奏遊戲：`OnMarker` 標記節拍點
+- 音樂系統：`OnLoopPoint` 用於無縫切換
+
+---
+
+## 6.5 PlayOneShot：Fire-and-Forget 模式
+
+大量短音效（腳步、彈殼、UI click）不需要追蹤 handle：
+
+```csharp
+// 不回傳 handle，減少 C# 側管理開銷
+UNAudioManager.Instance.PlayOneShot(hitClip, volume: 0.8f);
+
+// 內部實作：分配 voice 後不記錄到 handle map
+// voice 播完自動回收，無法 Stop/Pause
+```
+
+**與 Play() 的差異：**
+
+| | `Play()` | `PlayOneShot()` |
+|--|----------|-----------------|
+| 回傳值 | `UNVoiceHandle` | 無 |
+| 可控制 | Stop/Pause/SetVolume/Seek | 不可 |
+| 追蹤開銷 | handle map 查詢 | 無 |
+| 適用 | BGM、對話、可控 SFX | 大量 fire-and-forget SFX |
+
+---
+
+## 7. Editor 工具與測試便利性
+
+### 7.1 Editor Window：UNAudio Debug Panel
+
+```
+┌─ UNAudio Debug ──────────────────────────────────────┐
+│                                                       │
+│  Engine Status: ● Running   Output: 48kHz / 256 smp  │
+│  Active Voices: 12 / 64     Decode Threads: 2        │
+│  CPU Load: 2.3%             Latency: ~5.3 ms         │
+│                                                       │
+│  ┌─ Active Voices ─────────────────────────────────┐  │
+│  │ ID  │ Clip        │ Bus   │ Vol │ Pos   │ State │  │
+│  │ 03  │ hit_01      │ SFX   │ 0.8 │ 0.12s │ ▶    │  │
+│  │ 07  │ bgm_battle  │ Music │ 1.0 │ 42.5s │ ▶    │  │
+│  │ 11  │ footstep_02 │ SFX   │ 0.5 │ 0.03s │ ▶    │  │
+│  └─────────────────────────────────────────────────┘  │
+│                                                       │
+│  ┌─ Mixer Buses ───────────────────────────────────┐  │
+│  │ Master ████████████████░░░░ 0.0 dB              │  │
+│  │ ├─ Music ██████████░░░░░░░░ -6.0 dB             │  │
+│  │ ├─ SFX   ████████████████░░ -2.0 dB             │  │
+│  │ └─ Voice ████░░░░░░░░░░░░░░ -12.0 dB            │  │
+│  └─────────────────────────────────────────────────┘  │
+│                                                       │
+│  ┌─ Waveform Preview ──────────────────────────────┐  │
+│  │  ∿∿∿∿∿∿∿∿∿∿∿∿∿▎∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿  │  │
+│  └─────────────────────────────────────────────────┘  │
+│                                                       │
+│  [▶ Play Test] [⏹ Stop All] [🔄 Reload Engine]       │
+└───────────────────────────────────────────────────────┘
+```
+
+### 7.2 Inspector 整合
+
+- **UNAudioClip Inspector**：顯示波形預覽、metadata、壓縮率、可直接試聽
+- **UNAudioSource Inspector**：播放/停止按鈕、參數即時調整、Play on Awake 設定
+- **UNAudioMixer Inspector**：視覺化 bus 拓撲、即時 VU meter
+
+### 7.3 Editor 測試設計原則
+
+| 需求 | 做法 |
+|------|------|
+| **不需 Build 即可測試** | Native plugin 在 Editor 中直接載入（`Assets/Plugins/x86_64/`） |
+| **Play Mode 即時音訊** | Engine 在 `EditorApplication.playModeStateChanged` 自動初始化/關閉 |
+| **Edit Mode 預覽** | 提供 `[ExecuteInEditMode]` 的預覽播放功能，不依賴 Play Mode |
+| **Hot Reload 安全** | Domain Reload 時安全 shutdown native engine，reload 後自動重啟 |
+| **Mock/Stub 支援** | 提供 `IUNAudioBackend` 介面，Editor 可注入 null audio backend 做無聲測試 |
+| **Unit Test 友善** | 核心邏輯 (mixer math, command queue) 可在 Edit Mode Test Runner 測試 |
+
+### 7.4 Domain Reload / Assembly Reload 處理
+
+```csharp
+// 確保 native engine 在 C# domain reload 時安全關閉
+#if UNITY_EDITOR
+[InitializeOnLoad]
+static class UNAudioEditorLifecycle
+{
+    static UNAudioEditorLifecycle()
+    {
+        AssemblyReloadEvents.beforeAssemblyReload += OnBeforeReload;
+        AssemblyReloadEvents.afterAssemblyReload  += OnAfterReload;
+        EditorApplication.playModeStateChanged    += OnPlayModeChanged;
+    }
+
+    static void OnBeforeReload()  => UNAudioNative.ForceShutdown();
+    static void OnAfterReload()   => UNAudioNative.TryRestore();
+    static void OnPlayModeChanged(PlayModeStateChange state) { /* ... */ }
+}
+#endif
+```
+
+---
+
+## 8. Code Visibility（可見性與除錯性）
+
+### 8.1 原則
+
+- **C# 層完全開源**放在 Unity 專案內，開發者可閱讀、修改、擴展
+- **Native 層以源碼形式提供**，搭配 CMake build system
+- **清晰的 C ABI boundary**：所有 native 函式透過單一 header `unaudio.h` 匯出
+
+### 8.2 Native Debug 支援
+
+```cpp
+// Callback 機制讓 native log 顯示在 Unity Console
+typedef void (*UNA_LogCallback)(int level, const char* message);
+UNA_API void una_set_log_callback(UNA_LogCallback callback);
+
+// Debug stats 可從 C# 查詢
+struct UNAudioStats {
+    uint32_t active_voices;
+    uint32_t peak_voices;
+    float    cpu_load_percent;
+    float    output_latency_ms;
+    uint64_t total_samples_processed;
+    uint32_t buffer_underruns;      // 重要！追蹤效能問題
+    uint32_t commands_pending;
+};
+UNA_API void una_get_stats(UNAudioStats* out_stats);
+```
+
+### 8.3 Profiler Integration
+
+- 在 `Unity.Profiling.ProfilerMarker` 標記關鍵 C# 路徑
+- Native 層提供 `una_profiler_begin_sample` / `una_profiler_end_sample` 與 Unity Profiler 對接
+- Buffer underrun counter 可在 Editor Debug Panel 即時顯示
+
+---
+
+## 9. SIMD 優化策略
+
+Mixer 是 CPU 最密集的路徑，必須使用 SIMD 加速：
+
+### 9.1 平台 SIMD 映射
+
+| 平台 | SIMD ISA | 暫存器寬度 | 一次處理 samples |
+|------|----------|-----------|-----------------|
+| Windows (x86_64) | SSE2 / AVX2 | 128 / 256 bit | 4 / 8 float |
+| macOS (ARM) | NEON | 128 bit | 4 float |
+| Android (ARM64) | NEON | 128 bit | 4 float |
+| iOS (ARM64) | NEON | 128 bit | 4 float |
+
+### 9.2 SIMD 抽象層
+
+```cpp
+// 統一 SIMD wrapper，編譯時選擇
+namespace simd {
+
+#if defined(__AVX2__)
+    using vfloat = __m256;
+    constexpr int LANE_COUNT = 8;
+    inline vfloat load(const float* p)         { return _mm256_load_ps(p); }
+    inline void   store(float* p, vfloat v)    { return _mm256_store_ps(p, v); }
+    inline vfloat mul(vfloat a, vfloat b)      { return _mm256_mul_ps(a, b); }
+    inline vfloat add(vfloat a, vfloat b)      { return _mm256_add_ps(a, b); }
+    inline vfloat set1(float v)                { return _mm256_set1_ps(v); }
+
+#elif defined(__SSE2__)
+    using vfloat = __m128;
+    constexpr int LANE_COUNT = 4;
+    // ... SSE2 implementation
+
+#elif defined(__ARM_NEON)
+    using vfloat = float32x4_t;
+    constexpr int LANE_COUNT = 4;
+    inline vfloat load(const float* p)         { return vld1q_f32(p); }
+    inline void   store(float* p, vfloat v)    { return vst1q_f32(p, v); }
+    inline vfloat mul(vfloat a, vfloat b)      { return vmulq_f32(a, b); }
+    inline vfloat add(vfloat a, vfloat b)      { return vaddq_f32(a, b); }
+    inline vfloat set1(float v)                { return vdupq_n_f32(v); }
+#endif
+
+} // namespace simd
+```
+
+### 9.3 Hot Path SIMD 化清單
+
+| 路徑 | 說明 | 預估加速 |
+|------|------|---------|
+| **Voice → Mix Buffer** | 逐 voice 的 volume 乘法 + 累加到 bus buffer | 4–8x |
+| **Bus → Parent Bus** | bus 間的混音累加 | 4–8x |
+| **Pan (stereo)** | L/R gain 乘法 | 4x |
+| **Fade envelope** | 每 sample 的 gain ramp | 4–8x |
+| **SRC (linear)** | 線性插值的 lerp | 2–4x |
+| **Peak / RMS meter** | bus level 偵測（for VU meter） | 4x |
+| **Format conversion** | int16 ↔ float | 4–8x |
+
+```cpp
+// 範例：SIMD mix（voice buffer 混入 bus buffer）
+void mix_voice_to_bus(float* dst, const float* src, float volume, int sample_count) {
+    auto vol = simd::set1(volume);
+    for (int i = 0; i < sample_count; i += simd::LANE_COUNT) {
+        auto s = simd::load(src + i);
+        auto d = simd::load(dst + i);
+        simd::store(dst + i, simd::add(d, simd::mul(s, vol)));
+    }
+}
+```
+
+> **要求：** 所有 audio buffer 必須 16-byte aligned（SSE）或 32-byte aligned（AVX2）。Frame Allocator 的 `alloc()` 預設 align=16。
+
+---
+
+## 10. Audio Device 管理
+
+### 10.1 Device Hot-Swap（熱插拔）
+
+使用者在遊戲中插拔耳機、切換藍牙裝置時，引擎必須自動恢復：
+
+```
+正常狀態          裝置斷開           重新連接
+┌─────────┐     ┌─────────┐      ┌─────────┐
+│ Playing  │ ──▶│ DeviceLost│ ──▶ │ Recover  │
+│          │     │ (靜音)   │      │ (恢復)   │
+└─────────┘     └─────────┘      └─────────┘
+    ▲                                 │
+    └─────────────────────────────────┘
+```
+
+**各平台實作：**
+
+| 平台 | 偵測機制 | 恢復策略 |
+|------|---------|---------|
+| Windows | `IMMNotificationClient` 裝置變更通知 | 重新列舉裝置 + 重建 WASAPI stream |
+| Android | `AudioDeviceCallback` (AAudio) | AAudio stream disconnect → 重建 stream |
+| iOS | `AVAudioSession.interruptionNotification` | session 恢復後重新啟動 Audio Unit |
+
+```cpp
+// Native callback
+UNA_API void una_set_device_change_callback(void (*callback)(int event_type));
+
+// event_type:
+// UNA_DEVICE_LOST     = 1  → 引擎暫停輸出
+// UNA_DEVICE_RESTORED = 2  → 引擎自動恢復
+// UNA_DEVICE_CHANGED  = 3  → 輸出裝置改變（如耳機→喇叭）
+```
+
+### 10.2 Audio Focus / Interruption（行動平台）
+
+行動裝置的音訊焦點管理：
+
+| 事件 | iOS | Android | 引擎行為 |
+|------|-----|---------|---------|
+| 電話來電 | `AVAudioSession.beginInterruption` | `AUDIOFOCUS_LOSS` | 暫停全部 voice，記錄狀態 |
+| 電話結束 | `AVAudioSession.endInterruption` | `AUDIOFOCUS_GAIN` | 恢復先前狀態 |
+| 導航語音 | — | `AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK` | Duck 到 25% 音量 |
+| App 切背景 | `applicationDidEnterBackground` | `onPause` | 可設定暫停或繼續 |
+
+```csharp
+// C# 設定
+UNAudioManager.Instance.AudioFocusPolicy = new UNAudioFocusPolicy
+{
+    OnInterruption = UNInterruptAction.PauseAll,
+    OnTransientLoss = UNInterruptAction.DuckTo(0.25f),
+    OnBackground = UNInterruptAction.PauseAll,  // 或 Continue
+    AutoResume = true,
+};
+
+// Event
+UNAudioManager.Instance.OnAudioFocusChanged += (focusState) => { /* ... */ };
+```
+
+### 10.3 Memory Budget 系統
+
+行動平台記憶體有限，需要設定和監控音訊記憶體使用量：
+
+```csharp
+// 設定預算
+UNAudioManager.Instance.MemoryBudget = new UNMemoryBudget
+{
+    MaxCompressedBytes = 64 * 1024 * 1024,  // 64 MB 壓縮資料上限
+    MaxDecodedBytes    = 8  * 1024 * 1024,  // 8 MB pre-decoded PCM 上限
+    WarningThreshold   = 0.85f,              // 85% 時發出警告
+};
+
+// 查詢
+UNMemoryUsage usage = UNAudioManager.Instance.GetMemoryUsage();
+// usage.CompressedBytes, usage.DecodedBytes, usage.TotalBytes
+// usage.CompressedPercent, usage.DecodedPercent
+
+// Event：超過 warning threshold 時觸發
+UNAudioManager.Instance.OnMemoryWarning += (usage) => {
+    // 卸載低優先 clip
+};
+```
+
+**Native 實作：**
+- `una_clip_load()` 回傳失敗若超過預算
+- LRU-based 自動卸載最久未使用的 clip（可選）
+- Debug panel 顯示即時記憶體使用柱狀圖
+
+---
+
+## 11. 專案目錄結構
+
+```
+UNAudio/
+├── plan.md                           ← 本企劃文件
+│
+├── unity/
+│   └── UNAudio/                      ← Unity Package (可作為 local package 引用)
+│       ├── package.json
+│       ├── Runtime/
+│       │   ├── UNAudioManager.cs
+│       │   ├── UNAudioSource.cs
+│       │   ├── UNAudioClip.cs
+│       │   ├── UNVoiceHandle.cs
+│       │   ├── UNPlayParams.cs
+│       │   ├── UNBusId.cs
+│       │   ├── UNAudioConfig.cs      ← ScriptableObject 設定檔
+│       │   ├── Internal/
+│       │   │   ├── UNAudioNative.cs  ← P/Invoke declarations
+│       │   │   ├── NativeArray.cs    ← 記憶體管理輔助
+│       │   │   └── CommandBuffer.cs  ← C# 側 command 封裝
+│       │   └── Plugins/
+│       │       ├── x86_64/           ← Windows .dll
+│       │       ├── Android/          ← .so (arm64-v8a, armeabi-v7a)
+│       │       └── iOS/              ← .a (static lib)
+│       ├── Editor/
+│       │   ├── UNAudioClipImporter.cs
+│       │   ├── UNAudioClipEditor.cs
+│       │   ├── UNAudioSourceEditor.cs
+│       │   ├── UNAudioDebugWindow.cs
+│       │   ├── UNAudioMixerEditor.cs
+│       │   └── UNAudioEditorLifecycle.cs
+│       └── Tests/
+│           ├── EditMode/
+│           │   ├── CommandQueueTests.cs
+│           │   ├── VoiceHandleTests.cs
+│           │   └── MixerMathTests.cs
+│           └── PlayMode/
+│               ├── PlaybackTests.cs
+│               └── LatencyTests.cs
+│
+├── native/
+│   ├── CMakeLists.txt                ← 跨平台建置
+│   ├── include/
+│   │   └── unaudio.h                ← 公開 C ABI header
+│   ├── src/
+│   │   ├── engine_core.cpp           ← 生命週期、voice pool、virtual voices
+│   │   ├── command_queue.cpp         ← lock-free SPSC + batch
+│   │   ├── event_queue.cpp           ← audio→main thread event 回送
+│   │   ├── mixer.cpp                 ← mixer graph + ducking
+│   │   ├── decoder_vorbis.cpp
+│   │   ├── decoder_opus.cpp
+│   │   ├── decoder_adpcm.cpp
+│   │   ├── decoder_pcm.cpp
+│   │   ├── dsp_chain.cpp
+│   │   ├── sample_rate_converter.cpp ← runtime SRC
+│   │   ├── ring_buffer.h             ← lock-free ring buffer (header-only)
+│   │   ├── frame_allocator.h         ← audio thread 零分配記憶體池
+│   │   ├── simd_utils.h              ← SSE/AVX/NEON 抽象層
+│   │   ├── memory_budget.cpp         ← 記憶體預算追蹤
+│   │   └── platform/
+│   │       ├── backend_wasapi.cpp    ← + device change notification
+│   │       ├── backend_aaudio.cpp    ← + audio focus handling
+│   │       ├── backend_coreaudio.cpp ← + interruption handling
+│   │       └── backend_pulseaudio.cpp
+│   ├── third_party/
+│   │   ├── stb_vorbis/              ← single-file Vorbis decoder
+│   │   ├── opus/                    ← Opus codec (or opusfile)
+│   │   └── (無外部 dependency 為目標)
+│   └── tests/
+│       ├── test_ring_buffer.cpp
+│       ├── test_command_queue.cpp
+│       ├── test_mixer.cpp
+│       ├── test_decoder.cpp
+│       ├── test_frame_allocator.cpp
+│       ├── test_sample_rate_converter.cpp
+│       └── test_simd_mix.cpp
+│
+├── tools/
+│   ├── encode_unac.py               ← CLI 工具：將 .wav 轉為 .unac
+│   └── batch_import.py              ← 批次匯入腳本
+│
+└── docs/
+    ├── architecture.md
+    ├── getting-started.md
+    └── api-reference.md
+```
+
+---
+
+## 10. 開發階段規劃
+
+### Phase 1：Core Foundation（4–6 週）
+
+- [ ] Native engine 骨架（初始化 / 關閉 / audio callback）
+- [ ] Frame Allocator（audio thread 零分配記憶體池）
+- [ ] WASAPI backend（Windows, Shared mode 先行）
+- [ ] Lock-free command queue (SPSC) + batch 機制
+- [ ] Event queue（audio → main thread 回送）
+- [ ] Voice pool + PCM 播放（先不壓縮）
+- [ ] 基本 mixer（master + 2 bus）+ SIMD mix path (SSE2/NEON)
+- [ ] C# P/Invoke binding
+- [ ] `UNAudioManager` + `Play()`/`PlayOneShot()`/`Stop()` 基本功能
+- [ ] Editor 中可播放 PCM audio
+
+### Phase 2：Codec & Asset Pipeline（3–4 週）
+
+- [ ] `.unac` 檔案格式定義與序列化
+- [ ] `ScriptedImporter` for `.unac` + per-platform import override
+- [ ] stb_vorbis 整合（Vorbis decode）
+- [ ] ADPCM decoder
+- [ ] Compressed-in-memory 載入 + streaming decode
+- [ ] Pre-decoded short clip cache（DecompressOnLoad 策略）
+- [ ] `UNAudioClip` ScriptableObject
+- [ ] Import settings Inspector UI
+- [ ] Addressables `UNAudioClipReference` 整合
+
+### Phase 3：Editor Tooling（2–3 週）
+
+- [ ] UNAudio Debug Window（含 memory budget 視覺化）
+- [ ] UNAudioClip Inspector（波形預覽 + 試聯）
+- [ ] UNAudioSource Inspector
+- [ ] Domain Reload 安全處理
+- [ ] Edit Mode 預覽播放
+- [ ] Profiler marker 整合
+
+### Phase 4：Advanced Features（3–4 週）
+
+- [ ] DSP chain 框架（volume → pan → output）
+- [ ] Runtime sample rate conversion (SRC)
+- [ ] Pitch shifting（resampler）
+- [ ] Fade in/out + sample-accurate scheduling（`ScheduleDspTime`）
+- [ ] Voice stealing + priority system + virtual voices
+- [ ] Ducking / side-chain 系統
+- [ ] Seek / SetPlaybackPosition
+- [ ] Event callback 系統（OnVoiceFinished、OnLoopPoint、OnMarker）
+- [ ] 3D spatial 基礎（distance attenuation + stereo panning）
+- [ ] Opus decoder 整合
+
+### Phase 5：Android & Mobile（3–4 週）
+
+- [ ] AAudio backend + device disconnect recovery
+- [ ] OpenSL ES fallback
+- [ ] Android .so 建置 (CMake + NDK)
+- [ ] iOS Core Audio backend + interruption handling
+- [ ] iOS static lib 建置
+- [ ] Audio Focus / Interruption 策略整合
+- [ ] Memory budget 系統
+- [ ] 行動平台延遲測試與調校
+
+### Phase 6：Polish & Production（2–3 週）
+
+- [ ] WASAPI Exclusive mode（可選）
+- [ ] WASAPI device change notification + hot-swap recovery
+- [ ] Async asset loading
+- [ ] Memory profiling + leak detection
+- [ ] Stress test（64 physical + 128 virtual voices 同時運作）
+- [ ] CI/CD native build pipeline（GitHub Actions: Windows/Android/iOS）
+- [ ] 文件撰寫
+- [ ] Sample project
+
+---
+
+## 11. 技術風險與對策
+
+| 風險 | 衝擊 | 對策 |
+|------|------|------|
+| Audio thread stall（GC / lock） | 爆音、斷音 | Frame Allocator 零分配；command queue lock-free |
+| Domain Reload crash | Editor 崩潰 | `ForceShutdown` + 全 native 資源追蹤清理 |
+| Android 碎片化延遲差異 | 部分裝置高延遲 | AAudio performance mode + fallback buffer 大小調整 |
+| Codec 解碼跟不上播放速度 | 斷音 | Decode thread 預填充 ring buffer；buffer underrun 監控 + event |
+| Native plugin 載入失敗 | 功能不可用 | Graceful fallback + 明確錯誤訊息 |
+| stb_vorbis seek 精度 | Loop 接縫 | 自建 seek table + crossfade loop |
+| 音訊裝置突然斷開 | 靜音、崩潰 | Device change notification + 自動重建 stream |
+| 行動端來電中斷 | 音訊殘留或衝突 | Audio Focus policy + 自動暫停/恢復 |
+| 記憶體超標（行動端） | OOM crash | Memory budget 系統 + LRU 自動卸載 + 警告 event |
+| SRC 品質不足 | 音高偏移、aliasing | 提供多級 SRC 品質（Linear/CatmullRom/Sinc）|
+| CI 跨平台編譯失敗 | 延遲交付 | GitHub Actions matrix build + 快取 NDK/Xcode |
+
+---
+
+## 12. 第三方依賴
+
+| Library | 用途 | 授權 |
+|---------|------|------|
+| **stb_vorbis** | OGG Vorbis 解碼 | Public Domain |
+| **Opus / opusfile** | Opus 解碼 | BSD |
+| **Google Test** | Native 單元測試 | BSD |
+
+> 目標：最小化外部依賴，核心 mixer/DSP/ring buffer 完全自寫。
+
+---
+
+## 13. 效能目標
+
+| 指標 | 目標值 | 備註 |
+|------|--------|------|
+| Output latency (Windows) | < 10 ms | WASAPI Shared 256 samples |
+| Output latency (Android, good devices) | < 15 ms | AAudio LowLatency mode |
+| Physical voice count | 64 | 實際產生音訊的 voice |
+| Virtual voice count | 128+ | 追蹤位置但不消耗 audio 資源 |
+| Mixer CPU (64 voices, 48kHz) | < 3% single core | SIMD 優化後 |
+| Mixer CPU (64 voices, no SIMD) | < 5% single core | Scalar fallback |
+| Memory per compressed clip (1 min music) | < 1 MB (Vorbis q5) | — |
+| Memory per voice decode buffer | ~4 KB (256 samples × 2ch × 8 bytes) | — |
+| Frame Allocator size | 256 KB | Audio thread scratch memory |
+| Command queue throughput | > 10,000 commands/sec | 含 batch 模式 |
+| Sample-accurate scheduling precision | 1 sample (≈ 0.02 ms @ 48kHz) | — |
+| Device hot-swap recovery time | < 500 ms | 自動重建 stream |
+| Audio memory budget (mobile) | 可設定，預設 64 MB | 含 compressed + decoded |
+
+---
+
+## 14. 命名規範
+
+| 範疇 | 規範 | 範例 |
+|------|------|------|
+| C# public class | PascalCase, `UN` prefix | `UNAudioManager` |
+| C# internal | PascalCase | `CommandBuffer` |
+| C ABI function | snake_case, `una_` prefix | `una_engine_init()` |
+| C struct | PascalCase, `UNA` prefix | `UNAudioStats` |
+| C enum | `UNA_` prefix + UPPER_SNAKE | `UNA_CODEC_VORBIS` |
+| Native C++ internal | snake_case | `voice_pool::allocate()` |
+| Files | snake_case | `engine_core.cpp` |
+| Unity asset | PascalCase | `UNAudioConfig.asset` |
+
+---
+
+## 15. CI/CD Native Build Pipeline
+
+跨平台 native plugin 需要自動化建置：
+
+```yaml
+# .github/workflows/native-build.yml (概念)
+name: Build Native Plugins
+on: [push, pull_request]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Windows DLL
+        run: |
+          cmake -B build -S native -A x64
+          cmake --build build --config Release
+      - uses: actions/upload-artifact@v4
+        with: { name: win-x64, path: build/Release/unaudio.dll }
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nttld/setup-ndk@v1
+        with: { ndk-version: r26d }
+      - name: Build Android .so (arm64-v8a)
+        run: |
+          cmake -B build -S native \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26
+          cmake --build build --config Release
+      - uses: actions/upload-artifact@v4
+        with: { name: android-arm64, path: build/libunaudio.so }
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build iOS static lib
+        run: |
+          cmake -B build -S native -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+          cmake --build build --config Release
+      - uses: actions/upload-artifact@v4
+        with: { name: ios-arm64, path: build/Release-iphoneos/libunaudio.a }
+
+  native-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and Run Native Tests
+        run: |
+          cmake -B build -S native -DBUILD_TESTS=ON
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+```
+
+**要點：**
+- 每次 PR 自動建置所有平台的 native plugin
+- Native 單元測試在 Linux 上執行（不需 audio 裝置）
+- Artifacts 上傳後可手動下載放入 Unity Plugins/
+- Release tag 時自動打包完整 plugin set
+
+---
+
+## 16. 變更紀錄
+
+| 版本 | 日期 | 變更摘要 |
+|------|------|---------|
+| v0.1 | 2026-02-19 | 初版：架構、API、asset pipeline、開發路線 |
+| v0.2 | 2026-02-19 | 補充：SIMD 優化、Frame Allocator、sample-accurate scheduling、event callback、virtual voices、pre-decoded cache、ducking/side-chain、SRC、device hot-swap、audio focus、memory budget、CI/CD、PlayOneShot、Seek、batch commands、per-platform import、Addressables 整合 |

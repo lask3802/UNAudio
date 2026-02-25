@@ -94,13 +94,11 @@ public:
 ```cpp
 class AudioMixer {
 public:
-    void AddSource(AudioSourceHandle source);
-    void RemoveSource(AudioSourceHandle source);
-    void Process(float* outputBuffer, int frameCount);
-    
-    // 效果處理
-    void AddEffect(EffectType type, EffectParams params);
+    void SetSourceCallback(MixSourceCallback callback);
+    void Process(float* outputBuffer, int frameCount, int channels,
+                 int maxHandle, FrameAllocator* alloc = nullptr);
     void SetMasterVolume(float volume);
+    float GetPeakLevel() const;
 };
 ```
 

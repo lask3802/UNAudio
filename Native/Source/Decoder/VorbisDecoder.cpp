@@ -6,19 +6,10 @@
 VorbisDecoder::VorbisDecoder()  = default;
 VorbisDecoder::~VorbisDecoder() = default;
 
-bool VorbisDecoder::Open(const uint8_t* data, size_t size) {
-    if (!data || size == 0) return false;
-    data_     = data;
-    dataSize_ = size;
-    currentFrame_ = 0;
-
-    // TODO: Initialise libvorbis, read format info
-    format_.sampleRate    = 44100;
-    format_.channels      = 2;
-    format_.bitsPerSample = 32;
-    format_.blockAlign    = format_.channels * (format_.bitsPerSample / 8);
-
-    return true;
+bool VorbisDecoder::Open(const uint8_t* /*data*/, size_t /*size*/) {
+    // Stub: libvorbis not yet integrated. Return false so the decoder
+    // fallback chain correctly skips this and tries the next format.
+    return false;
 }
 
 int VorbisDecoder::Decode(float* buffer, int frameCount) {
@@ -37,4 +28,5 @@ bool VorbisDecoder::Seek(int64_t frame) {
 
 UNAudioFormat VorbisDecoder::GetFormat()   const { return format_; }
 bool VorbisDecoder::SupportsStreaming()     const { return true; }
-int64_t VorbisDecoder::GetTotalFrames()    const { return totalFrames_; }
+int64_t VorbisDecoder::GetTotalFrames()       const { return totalFrames_; }
+int64_t VorbisDecoder::GetCurrentFrame()      const { return currentFrame_; }

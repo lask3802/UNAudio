@@ -1,5 +1,5 @@
 # Build artifacts
-Native/build/
+Native/build*/
 *.o
 *.obj
 *.dll
