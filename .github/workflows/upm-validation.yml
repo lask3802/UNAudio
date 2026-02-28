@@ -8,6 +8,7 @@ on:
       - 'Runtime/**'
       - 'Editor/**'
       - 'Tests/**'
+      - 'tools/**'
       - '.github/workflows/upm-validation.yml'
   pull_request:
     branches: [ main, develop ]
@@ -16,6 +17,7 @@ on:
       - 'Runtime/**'
       - 'Editor/**'
       - 'Tests/**'
+      - 'tools/**'
       - '.github/workflows/upm-validation.yml'
   workflow_dispatch:
 
@@ -65,7 +67,7 @@ jobs:
       - name: Validate directory structure
         run: |
           echo "=== Checking UPM directory structure ==="
-          dirs=("Runtime" "Editor" "Tests" "Documentation")
+          dirs=("Runtime" "Editor" "Tests" "Documentation" "tools")
           for d in "${dirs[@]}"; do
             if [ ! -d "$d" ]; then
               echo "WARNING: Missing directory: $d"
@@ -81,6 +83,27 @@ jobs:
             else
               echo "OK: $f"
             fi
+          done
+
+      - name: Validate Unity .meta files for immutable package folders
+        run: |
+          echo "=== Checking Unity .meta files in package folders ==="
+          required_paths=(
+            "Tests"
+            "Tests/Editor"
+            "Tests/Editor/com.lask3802.unaudio.tests.editor.asmdef"
+            "Tests/Editor/UNAudioEditorTests.cs"
+            "Tests/Runtime"
+            "Tests/Runtime/com.lask3802.unaudio.tests.runtime.asmdef"
+            "Tests/Runtime/UNAudioRuntimeTests.cs"
+            "tools"
+          )
+          for p in "${required_paths[@]}"; do
+            if [ ! -f "${p}.meta" ]; then
+              echo "ERROR: Missing Unity meta file: ${p}.meta"
+              exit 1
+            fi
+            echo "OK: ${p}.meta"
           done
 
       - name: Validate C# file syntax
