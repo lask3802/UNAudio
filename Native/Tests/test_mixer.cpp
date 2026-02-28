@@ -46,7 +46,7 @@ static std::vector<uint8_t> make_dc_wav(int numFrames, float amplitude, int chan
     return wav;
 }
 
-TEST(Mixer_EmptyOutput) {
+TEST(UNAudio, Mixer_EmptyOutput) {
     AudioMixer mixer;
 
     float output[256] = {};
@@ -58,7 +58,7 @@ TEST(Mixer_EmptyOutput) {
         ASSERT_NEAR(output[i], 0.0f, 0.0001f);
 }
 
-TEST(Mixer_MasterVolume) {
+TEST(UNAudio, Mixer_MasterVolume) {
     AudioMixer mixer;
     mixer.SetMasterVolume(0.5f);
 
@@ -86,7 +86,7 @@ TEST(Mixer_MasterVolume) {
     ASSERT_NEAR(output[1], 0.4f, 0.001f);
 }
 
-TEST(Mixer_SourceVolume) {
+TEST(UNAudio, Mixer_SourceVolume) {
     AudioMixer mixer;
     mixer.SetMasterVolume(1.0f);
 
@@ -112,7 +112,7 @@ TEST(Mixer_SourceVolume) {
     ASSERT_NEAR(output[0], 0.25f, 0.001f);
 }
 
-TEST(Mixer_PeakLevel) {
+TEST(UNAudio, Mixer_PeakLevel) {
     AudioMixer mixer;
     mixer.SetMasterVolume(1.0f);
 
@@ -138,7 +138,7 @@ TEST(Mixer_PeakLevel) {
     ASSERT_NEAR(mixer.GetPeakLevel(), 0.75f, 0.001f);
 }
 
-TEST(Mixer_FinishedVoice) {
+TEST(UNAudio, Mixer_FinishedVoice) {
     AudioMixer mixer;
 
     auto wav = make_dc_wav(64, 0.5f);
@@ -166,7 +166,7 @@ TEST(Mixer_FinishedVoice) {
     ASSERT_EQ(mixer.GetFinishedVoices()[0], handle);
 }
 
-TEST(Mixer_WithFrameAllocator) {
+TEST(UNAudio, Mixer_WithFrameAllocator) {
     AudioMixer mixer;
     una::FrameAllocator alloc(64 * 1024);
 
@@ -194,7 +194,7 @@ TEST(Mixer_WithFrameAllocator) {
     ASSERT_NEAR(output[0], 0.5f, 0.001f);
 }
 
-TEST(Mixer_SkipsInactiveSource) {
+TEST(UNAudio, Mixer_SkipsInactiveSource) {
     // Replaces the old RemoveSource test: callback returns false
     // for a given handle, so it should be skipped.
     AudioMixer mixer;
@@ -212,7 +212,7 @@ TEST(Mixer_SkipsInactiveSource) {
         ASSERT_NEAR(output[i], 0.0f, 0.0001f);
 }
 
-TEST(Mixer_MonoToStereoUpmix) {
+TEST(UNAudio, Mixer_MonoToStereoUpmix) {
     AudioMixer mixer;
     mixer.SetMasterVolume(1.0f);
 
@@ -242,3 +242,4 @@ TEST(Mixer_MonoToStereoUpmix) {
     ASSERT_NEAR(output[2], 0.6f, 0.001f); // L
     ASSERT_NEAR(output[3], 0.6f, 0.001f); // R
 }
+

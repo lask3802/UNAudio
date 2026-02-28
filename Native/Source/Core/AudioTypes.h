@@ -71,6 +71,14 @@ typedef struct {
     UNAudioCompressionMode compressionMode;
 } UNAudioClipInfo;
 
+// System audio format (queried from the OS default audio endpoint)
+typedef struct {
+    int32_t sampleRate;
+    int32_t channels;
+    int32_t bitsPerSample;
+    int32_t isValid;       // 1 if the query succeeded, 0 otherwise
+} UNAudioSystemFormat;
+
 #ifdef __cplusplus
 }
 #endif

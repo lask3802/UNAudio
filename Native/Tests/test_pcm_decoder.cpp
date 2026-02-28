@@ -88,7 +88,7 @@ static std::vector<uint8_t> make_wav_float32(int numFrames) {
     return wav;
 }
 
-TEST(PCMDecoder_OpenWav16) {
+TEST(UNAudio, PCMDecoder_OpenWav16) {
     auto wav = make_wav_16bit(1024);
     PCMDecoder dec;
     ASSERT_TRUE(dec.Open(wav.data(), wav.size()));
@@ -100,7 +100,7 @@ TEST(PCMDecoder_OpenWav16) {
     ASSERT_EQ(dec.GetTotalFrames(), 1024);
 }
 
-TEST(PCMDecoder_OpenWavFloat32) {
+TEST(UNAudio, PCMDecoder_OpenWavFloat32) {
     auto wav = make_wav_float32(512);
     PCMDecoder dec;
     ASSERT_TRUE(dec.Open(wav.data(), wav.size()));
@@ -112,7 +112,7 @@ TEST(PCMDecoder_OpenWavFloat32) {
     ASSERT_EQ(dec.GetTotalFrames(), 512);
 }
 
-TEST(PCMDecoder_Decode16) {
+TEST(UNAudio, PCMDecoder_Decode16) {
     auto wav = make_wav_16bit(256);
     PCMDecoder dec;
     ASSERT_TRUE(dec.Open(wav.data(), wav.size()));
@@ -123,7 +123,7 @@ TEST(PCMDecoder_Decode16) {
     ASSERT_NEAR(buf[0], 0.0f, 0.001f);
 }
 
-TEST(PCMDecoder_DecodeFloat32) {
+TEST(UNAudio, PCMDecoder_DecodeFloat32) {
     auto wav = make_wav_float32(128);
     PCMDecoder dec;
     ASSERT_TRUE(dec.Open(wav.data(), wav.size()));
@@ -134,7 +134,7 @@ TEST(PCMDecoder_DecodeFloat32) {
     ASSERT_NEAR(buf[0], 0.0f, 0.001f);
 }
 
-TEST(PCMDecoder_Seek) {
+TEST(UNAudio, PCMDecoder_Seek) {
     auto wav = make_wav_16bit(1000);
     PCMDecoder dec;
     ASSERT_TRUE(dec.Open(wav.data(), wav.size()));
@@ -152,7 +152,7 @@ TEST(PCMDecoder_Seek) {
     ASSERT_NEAR(buf[50], buf2[50], 0.0001f);
 }
 
-TEST(PCMDecoder_PartialDecode) {
+TEST(UNAudio, PCMDecoder_PartialDecode) {
     auto wav = make_wav_16bit(100);
     PCMDecoder dec;
     ASSERT_TRUE(dec.Open(wav.data(), wav.size()));
@@ -165,7 +165,7 @@ TEST(PCMDecoder_PartialDecode) {
     ASSERT_EQ(decoded, 0);
 }
 
-TEST(PCMDecoder_SeekBeyondEnd) {
+TEST(UNAudio, PCMDecoder_SeekBeyondEnd) {
     auto wav = make_wav_16bit(100);
     PCMDecoder dec;
     ASSERT_TRUE(dec.Open(wav.data(), wav.size()));
@@ -177,13 +177,22 @@ TEST(PCMDecoder_SeekBeyondEnd) {
     ASSERT_EQ(decoded, 0);
 }
 
-TEST(PCMDecoder_RawFallback) {
+TEST(UNAudio, PCMDecoder_RejectsNonWav) {
+    // Non-WAV data should be rejected (no silent fallback to raw PCM)
     uint8_t raw[100] = {};
     PCMDecoder dec;
-    ASSERT_TRUE(dec.Open(raw, sizeof(raw)));
-
-    UNAudioFormat fmt = dec.GetFormat();
-    ASSERT_EQ(fmt.sampleRate, 44100);
-    ASSERT_EQ(fmt.channels, 2);
-    ASSERT_EQ(fmt.bitsPerSample, 16);
+    ASSERT_FALSE(dec.Open(raw, sizeof(raw)));
 }
+
+TEST(UNAudio, PCMDecoder_RejectsOggData) {
+    // OGG Vorbis data must not be misinterpreted as raw PCM
+    uint8_t ogg[] = {'O','g','g','S', 0, 0x02, 0,0,0,0,0,0,0,0,
+                     0x78,0x56,0x34,0x12, 0,0,0,0, 0,0,0,0,
+                     1, 30,
+                     0x01, 'v','o','r','b','i','s',
+                     0,0,0,0, 2, 0x80,0xBB,0x00,0x00,
+                     0,0,0,0, 0,0,0xF4,0x01, 0,0,0,0};
+    PCMDecoder dec;
+    ASSERT_FALSE(dec.Open(ogg, sizeof(ogg)));
+}
+

@@ -2,7 +2,7 @@
 #include "../Source/Core/SimdUtils.h"
 #include <cmath>
 
-TEST(Simd_Clear) {
+TEST(UNAudio, Simd_Clear) {
     float buf[16];
     for (auto& v : buf) v = 99.0f;
 
@@ -11,7 +11,7 @@ TEST(Simd_Clear) {
         ASSERT_NEAR(buf[i], 0.0f, 0.0001f);
 }
 
-TEST(Simd_ApplyGain) {
+TEST(UNAudio, Simd_ApplyGain) {
     float buf[8] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
     una::simd::apply_gain(buf, 0.5f, 8);
 
@@ -20,7 +20,7 @@ TEST(Simd_ApplyGain) {
     ASSERT_NEAR(buf[7], 4.0f, 0.0001f);
 }
 
-TEST(Simd_MixAdd) {
+TEST(UNAudio, Simd_MixAdd) {
     float dst[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float src[4] = {2.0f, 4.0f, 6.0f, 8.0f};
 
@@ -32,19 +32,19 @@ TEST(Simd_MixAdd) {
     ASSERT_NEAR(dst[3], 5.0f, 0.0001f);  // 1 + 8*0.5
 }
 
-TEST(Simd_PeakLevel) {
+TEST(UNAudio, Simd_PeakLevel) {
     float buf[8] = {0.1f, -0.9f, 0.5f, -0.3f, 0.8f, -0.2f, 0.4f, -0.7f};
     float peak = una::simd::peak_level(buf, 8);
     ASSERT_NEAR(peak, 0.9f, 0.0001f);
 }
 
-TEST(Simd_PeakLevel_AllZero) {
+TEST(UNAudio, Simd_PeakLevel_AllZero) {
     float buf[8] = {};
     float peak = una::simd::peak_level(buf, 8);
     ASSERT_NEAR(peak, 0.0f, 0.0001f);
 }
 
-TEST(Simd_StereoPan_Left) {
+TEST(UNAudio, Simd_StereoPan_Left) {
     // Constant-power: pan=-1 => left_gain = sqrt(1.0) = 1.0, right_gain = sqrt(0.0) = 0.0
     float buf[8] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
     una::simd::apply_stereo_pan(buf, -1.0f, 4);
@@ -55,7 +55,7 @@ TEST(Simd_StereoPan_Left) {
     ASSERT_NEAR(buf[3], 0.0f, 0.0001f); // R
 }
 
-TEST(Simd_StereoPan_Right) {
+TEST(UNAudio, Simd_StereoPan_Right) {
     // Constant-power: pan=1 => left_gain = sqrt(0.0) = 0.0, right_gain = sqrt(1.0) = 1.0
     float buf[8] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
     una::simd::apply_stereo_pan(buf, 1.0f, 4);
@@ -64,7 +64,7 @@ TEST(Simd_StereoPan_Right) {
     ASSERT_NEAR(buf[1], 1.0f, 0.0001f); // R unchanged
 }
 
-TEST(Simd_StereoPan_Center) {
+TEST(UNAudio, Simd_StereoPan_Center) {
     // Constant-power: pan=0 => left_gain = sqrt(0.5) ≈ 0.7071, right_gain = sqrt(0.5) ≈ 0.7071
     // This maintains constant power at center (L^2 + R^2 = 1.0)
     float buf[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -75,7 +75,7 @@ TEST(Simd_StereoPan_Center) {
     ASSERT_NEAR(buf[1], expected, 0.001f);
 }
 
-TEST(Simd_Int16ToFloat) {
+TEST(UNAudio, Simd_Int16ToFloat) {
     int16_t src[4] = {0, 32767, -32768, 16384};
     float dst[4];
     una::simd::int16_to_float(dst, src, 4);
@@ -86,7 +86,7 @@ TEST(Simd_Int16ToFloat) {
     ASSERT_NEAR(dst[3], 0.5f, 0.001f);
 }
 
-TEST(Simd_FloatToInt16) {
+TEST(UNAudio, Simd_FloatToInt16) {
     float src[4] = {0.0f, 1.0f, -1.0f, 0.5f};
     int16_t dst[4];
     una::simd::float_to_int16(dst, src, 4);
@@ -97,7 +97,7 @@ TEST(Simd_FloatToInt16) {
     ASSERT_TRUE(std::abs(dst[3] - 16383) <= 1);
 }
 
-TEST(Simd_FloatToInt16_Clamp) {
+TEST(UNAudio, Simd_FloatToInt16_Clamp) {
     float src[2] = {2.0f, -3.0f};
     int16_t dst[2];
     una::simd::float_to_int16(dst, src, 2);
@@ -105,3 +105,4 @@ TEST(Simd_FloatToInt16_Clamp) {
     ASSERT_EQ(dst[0], 32767);
     ASSERT_EQ(dst[1], -32767);
 }
+

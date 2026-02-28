@@ -1,7 +1,7 @@
 #include "test_framework.h"
 #include "../Source/Core/FrameAllocator.h"
 
-TEST(FrameAllocator_BasicAlloc) {
+TEST(UNAudio, FrameAllocator_BasicAlloc) {
     una::FrameAllocator alloc(4096);
     ASSERT_EQ(alloc.capacity(), 4096u);
     ASSERT_EQ(alloc.used(), 0u);
@@ -11,7 +11,7 @@ TEST(FrameAllocator_BasicAlloc) {
     ASSERT_TRUE(alloc.used() >= 256u);
 }
 
-TEST(FrameAllocator_Alignment) {
+TEST(UNAudio, FrameAllocator_Alignment) {
     una::FrameAllocator alloc(4096);
 
     // 16-byte alignment
@@ -25,7 +25,7 @@ TEST(FrameAllocator_Alignment) {
     ASSERT_EQ(reinterpret_cast<uintptr_t>(b) % 32, 0u);
 }
 
-TEST(FrameAllocator_Reset) {
+TEST(UNAudio, FrameAllocator_Reset) {
     una::FrameAllocator alloc(4096);
 
     alloc.alloc(1024);
@@ -40,7 +40,7 @@ TEST(FrameAllocator_Reset) {
     ASSERT_TRUE(p != nullptr);
 }
 
-TEST(FrameAllocator_MultipleAllocs) {
+TEST(UNAudio, FrameAllocator_MultipleAllocs) {
     una::FrameAllocator alloc(4096);
 
     float* a = alloc.alloc_array<float>(128);
@@ -55,3 +55,4 @@ TEST(FrameAllocator_MultipleAllocs) {
     ASSERT_NEAR(a[0], 1.0f, 0.001f);
     ASSERT_NEAR(b[0], 2.0f, 0.001f);
 }
+

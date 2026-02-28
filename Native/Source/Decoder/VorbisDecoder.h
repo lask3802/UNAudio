@@ -2,8 +2,11 @@
 #define UNAUDIO_VORBIS_DECODER_H
 
 #include "AudioDecoder.h"
+#include <atomic>
+#include <vector>
 
-/// Ogg Vorbis decoder – wraps libvorbis (to be integrated in a later phase).
+/// Ogg Vorbis decoder backed by stb_vorbis.
+/// Decodes into PCM float on open for deterministic, lock-free playback.
 class VorbisDecoder : public AudioDecoder {
 public:
     VorbisDecoder();
@@ -19,10 +22,9 @@ public:
 
 private:
     UNAudioFormat format_{};
-    const uint8_t* data_ = nullptr;
-    size_t dataSize_ = 0;
+    std::vector<float> pcmData_;
     int64_t totalFrames_ = 0;
-    int64_t currentFrame_ = 0;
+    std::atomic<int64_t> currentFrame_{0};
 };
 
 #endif // UNAUDIO_VORBIS_DECODER_H

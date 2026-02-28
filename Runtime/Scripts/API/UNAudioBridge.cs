@@ -83,6 +83,11 @@ namespace UNAudio
         [DllImport(LibName, EntryPoint = "UNAudio_GetPlaybackFrame")]
         public static extern long GetPlaybackFrame(int handle);
 
+        // ── Clip info ──────────────────────────────────────────────
+
+        [DllImport(LibName, EntryPoint = "UNAudio_GetClipInfo")]
+        public static extern UNAudioClipInfo GetClipInfo(int handle);
+
         // ── Event polling ───────────────────────────────────────────
 
         /// <summary>
@@ -91,6 +96,15 @@ namespace UNAudio
         /// </summary>
         [DllImport(LibName, EntryPoint = "UNAudio_PollEvent")]
         public static extern int PollEvent(out int eventType, out int voiceId, out int param);
+
+        // ── System audio format query ───────────────────────────────
+
+        /// <summary>
+        /// Query the OS default audio endpoint format (sample rate, channels, bit depth).
+        /// Uses WASAPI Core Audio on Windows to get the actual system mixer format.
+        /// </summary>
+        [DllImport(LibName, EntryPoint = "UNAudio_GetSystemAudioFormat")]
+        public static extern UNAudioSystemFormat GetSystemAudioFormat();
     }
 
     /// <summary>
@@ -105,5 +119,34 @@ namespace UNAudio
         public int bufferSize;
         public int bufferCount;
         public int exclusiveMode;
+    }
+
+    /// <summary>
+    /// Audio clip info returned from the native engine.
+    /// Must match the C struct UNAudioClipInfo layout (AudioTypes.h).
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct UNAudioClipInfo
+    {
+        public int sampleRate;
+        public int channels;
+        public int bitsPerSample;
+        public float lengthInSeconds;
+        public long totalFrames;
+        public int compressionMode;
+    }
+
+    /// <summary>
+    /// System audio format queried from the OS default audio endpoint.
+    /// Must match the C struct UNAudioSystemFormat layout (AudioTypes.h).
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct UNAudioSystemFormat
+    {
+        public int sampleRate;
+        public int channels;
+        public int bitsPerSample;
+        /// <summary>1 if the query succeeded, 0 otherwise.</summary>
+        public int isValid;
     }
 }

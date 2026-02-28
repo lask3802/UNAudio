@@ -10,7 +10,9 @@ public:
     ALSAOutput();
     ~ALSAOutput() override;
 
-    bool Initialize(const UNAudioOutputConfig& config) override;
+    bool Initialize(const UNAudioOutputConfig& config,
+                    AudioRenderCallback callback,
+                    void* userData) override;
     bool Start() override;
     void Stop() override;
     int32_t GetActualSampleRate() const override;
@@ -20,6 +22,8 @@ public:
 private:
     UNAudioOutputConfig config_{};
     bool running_ = false;
+    AudioRenderCallback callback_ = nullptr;
+    void* userData_ = nullptr;
     // TODO: snd_pcm_t* pcmHandle;
 };
 
@@ -28,8 +32,12 @@ private:
 ALSAOutput::ALSAOutput()  = default;
 ALSAOutput::~ALSAOutput() { Stop(); }
 
-bool ALSAOutput::Initialize(const UNAudioOutputConfig& config) {
+bool ALSAOutput::Initialize(const UNAudioOutputConfig& config,
+                            AudioRenderCallback callback,
+                            void* userData) {
     config_ = config;
+    callback_ = callback;
+    userData_ = userData;
     // TODO: snd_pcm_open, snd_pcm_hw_params, etc.
     return true;
 }
@@ -51,6 +59,10 @@ float   ALSAOutput::GetLatencyMs() const {
     if (config_.sampleRate > 0)
         return static_cast<float>(config_.bufferSize) / config_.sampleRate * 1000.0f;
     return 0.0f;
+}
+
+std::unique_ptr<AudioOutput> CreatePlatformAudioOutput() {
+    return std::make_unique<ALSAOutput>();
 }
 
 #endif // __linux__

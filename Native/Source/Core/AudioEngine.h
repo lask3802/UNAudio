@@ -191,6 +191,9 @@ UNAUDIO_EXPORT int64_t  UNAudio_GetPlaybackFrame(int32_t handle);
 UNAUDIO_EXPORT int32_t  UNAudio_PollEvent(int32_t* outType, int32_t* outVoiceId,
                                            int32_t* outParam);
 
+// System audio format query (implemented in platform output .cpp)
+UNAUDIO_EXPORT UNAudioSystemFormat UNAudio_GetSystemAudioFormat(void);
+
 #ifdef __cplusplus
 }
 #endif

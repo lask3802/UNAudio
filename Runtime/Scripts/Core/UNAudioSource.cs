@@ -47,6 +47,7 @@ namespace UNAudio
         {
             if (clip == null) return;
             EnsureLoaded();
+            if (clip.NativeHandle < 0) return;
             UNAudioBridge.SetVolume(clip.NativeHandle, volume);
             UNAudioBridge.SetPan(clip.NativeHandle, pan);
             UNAudioBridge.SetLoop(clip.NativeHandle, loop);
@@ -100,6 +101,7 @@ namespace UNAudio
         {
             if (clip == null) return;
             clip.LoadAudioData();
+            if (clip.NativeHandle < 0) return;
             UNAudioBridge.Play(clip.NativeHandle);
         }
 
@@ -123,8 +125,7 @@ namespace UNAudio
 
         private void EnsureLoaded()
         {
-            if (clip != null && !clip.IsLoaded)
-                clip.LoadAudioData();
+            clip?.LoadAudioData();
         }
 
         private void Update()

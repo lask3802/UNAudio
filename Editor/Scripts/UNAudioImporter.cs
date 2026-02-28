@@ -31,15 +31,36 @@ namespace UNAudio.Editor
             var clip = ScriptableObject.CreateInstance<UNAudioClip>();
             clip.name = Path.GetFileNameWithoutExtension(ctx.assetPath);
 
-            // TODO: Extract real metadata (sample rate, channels, etc.) from the
-            //       audio data using the native decoder.  For now, use placeholders.
-            clip.SetMetadata(
-                sr:   44100,
-                ch:   2,
-                bps:  16,
-                len:  0f,
-                data: audioData
-            );
+            // Try to extract real metadata from audio headers (WAV, OGG, etc.)
+            if (AudioHeaderParser.TryParse(audioData, out AudioMetadata meta))
+            {
+                clip.SetMetadata(
+                    sr:     meta.sampleRate,
+                    ch:     meta.channels,
+                    bps:    meta.bitsPerSample,
+                    len:    meta.lengthInSeconds,
+                    frames: meta.totalFrames,
+                    data:   audioData
+                );
+            }
+            else
+            {
+                // Non-WAV format (mp3, ogg, flac) — metadata will be populated
+                // at runtime when the native engine decodes the file.
+                clip.SetMetadata(
+                    sr:     0,
+                    ch:     0,
+                    bps:    0,
+                    len:    0f,
+                    frames: 0,
+                    data:   audioData
+                );
+
+                string ext = Path.GetExtension(ctx.assetPath).ToLowerInvariant();
+                ctx.LogImportWarning(
+                    $"Could not parse audio header for '{ext}' format. " +
+                    "Metadata will be populated at runtime after native decode.");
+            }
 
             ctx.AddObjectToAsset("main", clip);
             ctx.SetMainObject(clip);

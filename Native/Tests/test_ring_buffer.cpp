@@ -3,7 +3,7 @@
 #include "../Source/Core/CommandQueue.h"
 #include "../Source/Core/EventQueue.h"
 
-TEST(RingBuffer_PushPop) {
+TEST(UNAudio, RingBuffer_PushPop) {
     una::RingBuffer<int, 16> rb;
 
     ASSERT_TRUE(rb.empty());
@@ -19,7 +19,7 @@ TEST(RingBuffer_PushPop) {
     ASSERT_TRUE(rb.empty());
 }
 
-TEST(RingBuffer_Full) {
+TEST(UNAudio, RingBuffer_Full) {
     una::RingBuffer<int, 4> rb; // capacity 4
 
     ASSERT_TRUE(rb.try_push(1));
@@ -34,7 +34,7 @@ TEST(RingBuffer_Full) {
     ASSERT_TRUE(rb.try_push(4)); // now has space
 }
 
-TEST(RingBuffer_Batch) {
+TEST(UNAudio, RingBuffer_Batch) {
     una::RingBuffer<int, 64> rb;
 
     int data[] = {10, 20, 30, 40, 50};
@@ -49,7 +49,7 @@ TEST(RingBuffer_Batch) {
     ASSERT_EQ(out[4], 50);
 }
 
-TEST(RingBuffer_FIFO_Order) {
+TEST(UNAudio, RingBuffer_FIFO_Order) {
     una::RingBuffer<int, 32> rb;
     for (int i = 0; i < 10; ++i)
         ASSERT_TRUE(rb.try_push(i * 100));
@@ -61,7 +61,7 @@ TEST(RingBuffer_FIFO_Order) {
     }
 }
 
-TEST(CommandQueue_BasicUsage) {
+TEST(UNAudio, CommandQueue_BasicUsage) {
     una::CommandQueue cq;
 
     una::AudioCommand cmd{};
@@ -75,7 +75,7 @@ TEST(CommandQueue_BasicUsage) {
     ASSERT_EQ(out.voice_id, 5);
 }
 
-TEST(EventQueue_BasicUsage) {
+TEST(UNAudio, EventQueue_BasicUsage) {
     una::EventQueue eq;
 
     una::AudioEvent evt{};
@@ -89,3 +89,4 @@ TEST(EventQueue_BasicUsage) {
               static_cast<int>(una::AudioEvent::Type::VoiceFinished));
     ASSERT_EQ(out.voice_id, 3);
 }
+

@@ -16,6 +16,7 @@ set(DECODER_SOURCES
     Source/Decoder/MP3Decoder.cpp
     Source/Decoder/VorbisDecoder.cpp
     Source/Decoder/FLACDecoder.cpp
+    Source/Decoder/ResamplingDecoder.cpp
 )
 
 set(MIXER_SOURCES
@@ -57,7 +58,7 @@ target_include_directories(UNAudio PRIVATE
 # ── Platform-specific link libraries ─────────────────────────────
 
 if(WIN32)
-    # TODO: target_link_libraries(UNAudio PRIVATE ole32 winmm)
+    target_link_libraries(UNAudio PRIVATE winmm ole32)
 elseif(APPLE)
     # TODO: target_link_libraries(UNAudio PRIVATE "-framework AudioToolbox" "-framework CoreAudio")
 elseif(ANDROID)
@@ -95,13 +96,42 @@ option(UNAUDIO_BUILD_TESTS "Build unit tests" OFF)
 if(UNAUDIO_BUILD_TESTS)
     enable_testing()
 
-    # Single-TU build: test_main.cpp #includes all other test files
-    add_executable(UNAudioTests
+    unset(UNA_GTEST_INCLUDE_DIRS)
+    find_package(GTest CONFIG QUIET)
+    if(NOT GTest_FOUND)
+        include(FetchContent)
+        FetchContent_Declare(
+            googletest
+            URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        )
+        set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(googletest)
+        set(UNA_GTEST_INCLUDE_DIRS
+            "${googletest_SOURCE_DIR}/googletest/include"
+            "${googletest_SOURCE_DIR}/googletest"
+        )
+    endif()
+
+    set(TEST_SOURCES
         Tests/test_main.cpp
+        Tests/test_ring_buffer.cpp
+        Tests/test_frame_allocator.cpp
+        Tests/test_simd_utils.cpp
+        Tests/test_pcm_decoder.cpp
+        Tests/test_vorbis_decoder.cpp
+        Tests/test_mixer.cpp
+        Tests/test_audio_output.cpp
+        Tests/test_resampling.cpp
+    )
+
+    add_executable(UNAudioTests
+        ${TEST_SOURCES}
         # Re-use library sources (link statically for tests)
         ${CORE_SOURCES}
         ${DECODER_SOURCES}
         ${MIXER_SOURCES}
+        ${PLATFORM_SOURCES}
     )
 
     target_include_directories(UNAudioTests PRIVATE
@@ -111,11 +141,33 @@ if(UNAUDIO_BUILD_TESTS)
         Source/Mixer
         Source/Platform
     )
+    if(UNA_GTEST_INCLUDE_DIRS)
+        # Force matching headers with the fetched gtest library on MSVC setups
+        # where another gtest copy may exist in the global INCLUDE path.
+        target_include_directories(UNAudioTests BEFORE PRIVATE ${UNA_GTEST_INCLUDE_DIRS})
+        if(MSVC)
+            foreach(_gtest_dir IN LISTS UNA_GTEST_INCLUDE_DIRS)
+                target_compile_options(UNAudioTests PRIVATE "/I${_gtest_dir}")
+            endforeach()
+        endif()
+    endif()
 
     # Force scalar SIMD for predictable test results on CI.
     # To also exercise SSE2/AVX2/NEON paths, build a second target
     # without UNA_FORCE_SCALAR (see Native/Tests/README for details).
     target_compile_definitions(UNAudioTests PRIVATE UNA_FORCE_SCALAR)
 
-    add_test(NAME UNAudioTests COMMAND UNAudioTests)
+    target_link_libraries(UNAudioTests PRIVATE GTest::gtest)
+
+    # Keep GoogleTest static registrars in optimized MSVC builds.
+    if(MSVC)
+        target_link_options(UNAudioTests PRIVATE /OPT:NOREF /OPT:NOICF)
+    endif()
+
+    if(WIN32)
+        target_link_libraries(UNAudioTests PRIVATE winmm ole32)
+    endif()
+
+    include(GoogleTest)
+    gtest_discover_tests(UNAudioTests)
 endif()

@@ -11,7 +11,9 @@ public:
     CoreAudioOutput();
     ~CoreAudioOutput() override;
 
-    bool Initialize(const UNAudioOutputConfig& config) override;
+    bool Initialize(const UNAudioOutputConfig& config,
+                    AudioRenderCallback callback,
+                    void* userData) override;
     bool Start() override;
     void Stop() override;
     int32_t GetActualSampleRate() const override;
@@ -21,6 +23,8 @@ public:
 private:
     UNAudioOutputConfig config_{};
     bool running_ = false;
+    AudioRenderCallback callback_ = nullptr;
+    void* userData_ = nullptr;
     // TODO: AudioUnit outputUnit;
 };
 
@@ -29,8 +33,12 @@ private:
 CoreAudioOutput::CoreAudioOutput()  = default;
 CoreAudioOutput::~CoreAudioOutput() { Stop(); }
 
-bool CoreAudioOutput::Initialize(const UNAudioOutputConfig& config) {
+bool CoreAudioOutput::Initialize(const UNAudioOutputConfig& config,
+                                 AudioRenderCallback callback,
+                                 void* userData) {
     config_ = config;
+    callback_ = callback;
+    userData_ = userData;
     // TODO: Create AudioUnit, set stream format, set render callback
     return true;
 }
@@ -52,6 +60,10 @@ float   CoreAudioOutput::GetLatencyMs() const {
     if (config_.sampleRate > 0)
         return static_cast<float>(config_.bufferSize) / config_.sampleRate * 1000.0f;
     return 0.0f;
+}
+
+std::unique_ptr<AudioOutput> CreatePlatformAudioOutput() {
+    return std::make_unique<CoreAudioOutput>();
 }
 
 #endif // __APPLE__

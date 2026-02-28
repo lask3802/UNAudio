@@ -99,22 +99,11 @@ bool PCMDecoder::Open(const uint8_t* data, size_t size) {
     dataSize_ = size;
     currentFrame_.store(0, std::memory_order_relaxed);
 
-    // Try WAV format first
-    if (parseWavHeader(data, size)) {
-        return true;
-    }
-
-    // Fallback: treat as raw 16-bit stereo 44.1kHz PCM
-    format_.sampleRate    = 44100;
-    format_.channels      = 2;
-    format_.bitsPerSample = 16;
-    format_.blockAlign    = format_.channels * (format_.bitsPerSample / 8);
-    isFloat_ = false;
-    pcmData_ = data;
-    pcmDataSize_ = size;
-    totalFrames_ = static_cast<int64_t>(pcmDataSize_) / format_.blockAlign;
-
-    return true;
+    // Only WAV/RIFF format is supported.
+    // Do NOT fall back to raw PCM interpretation — that would silently
+    // misinterpret OGG/MP3/FLAC data as 44.1kHz stereo, producing
+    // incorrect metadata and garbage audio.
+    return parseWavHeader(data, size);
 }
 
 int PCMDecoder::Decode(float* buffer, int frameCount) {

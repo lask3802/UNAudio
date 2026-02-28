@@ -2,7 +2,8 @@
     "name": "com.lask3802.unaudio.tests.runtime",
     "rootNamespace": "UNAudio.Tests.Runtime",
     "references": [
-        "com.lask3802.unaudio"
+        "com.lask3802.unaudio",
+        "UnityEngine.TestRunner"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

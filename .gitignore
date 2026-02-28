@@ -1,5 +1,6 @@
 # Build artifacts
 Native/build*/
+Native/build*.meta
 *.o
 *.obj
 *.dll
@@ -14,8 +15,10 @@ Native/build*/
 .vs/
 .vscode/
 *.sln
+*.slnx
 *.vcxproj*
 .idea/
+.claude/
 
 # OS
 .DS_Store
@@ -29,6 +32,12 @@ Logs/
 UserSettings/
 *.csproj
 *.unityproj
+*.meta
+
+# Local/sample workspaces
+SampleProject~/
+docs/plans/
+Plugins/
 
 # CMake
 CMakeFiles/

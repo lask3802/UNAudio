@@ -4,10 +4,19 @@
 #include "../Decoder/VorbisDecoder.h"
 #include "../Decoder/MP3Decoder.h"
 #include "../Decoder/FLACDecoder.h"
+#include "../Decoder/ResamplingDecoder.h"
 #include "../Mixer/AudioMixer.h"
 #include "../Platform/AudioOutput.h"
 #include <cstring>
 #include <algorithm>
+
+namespace {
+void AudioRenderBridge(float* outputBuffer, int frameCount, int channels, void* userData) {
+    if (!userData) return;
+    auto* engine = static_cast<AudioEngine*>(userData);
+    engine->AudioCallback(outputBuffer, frameCount, channels);
+}
+} // namespace
 
 // ── Singleton ────────────────────────────────────────────────────
 
@@ -51,12 +60,37 @@ UNAudioResult AudioEngine::Initialize(const UNAudioOutputConfig& config) {
     // Create frame allocator for audio thread (128 KB arena)
     frameAllocator_ = std::make_unique<una::FrameAllocator>(128 * 1024);
 
+    // Create platform output and connect render callback.
+    output_ = CreatePlatformAudioOutput();
+    if (!output_) {
+        frameAllocator_.reset();
+        mixer_.reset();
+        return UNAUDIO_ERROR_OUTPUT_FAILED;
+    }
+
+    if (!output_->Initialize(config_, &AudioRenderBridge, this)) {
+        output_.reset();
+        frameAllocator_.reset();
+        mixer_.reset();
+        return UNAUDIO_ERROR_OUTPUT_FAILED;
+    }
+
+    int32_t actualSampleRate = output_->GetActualSampleRate();
+    int32_t actualBufferSize = output_->GetActualBufferSize();
+    if (actualSampleRate > 0) config_.sampleRate = actualSampleRate;
+    if (actualBufferSize > 0) config_.bufferSize = actualBufferSize;
+
     // Initialize DSP clock for precise time reporting
-    dspClock_.sampleRate = config.sampleRate;
-    dspClock_.bufferSize = config.bufferSize;
+    dspClock_.sampleRate = config_.sampleRate;
+    dspClock_.bufferSize = config_.bufferSize;
     dspClock_.reset();
 
-    // TODO: Create platform-specific AudioOutput based on current platform
+    if (!output_->Start()) {
+        output_.reset();
+        frameAllocator_.reset();
+        mixer_.reset();
+        return UNAUDIO_ERROR_OUTPUT_FAILED;
+    }
 
     initialized_ = true;
     return UNAUDIO_OK;
@@ -155,16 +189,34 @@ UNAudioSourceHandle AudioEngine::LoadAudio(const uint8_t* data, size_t size,
     std::unique_ptr<AudioDecoder> decoder;
 
     if (mode == UNAUDIO_DECOMPRESS_ON_LOAD || mode == UNAUDIO_COMPRESS_IN_MEMORY) {
-        // Try PCM first (WAV format)
+        // Try WAV PCM first.
         auto pcm = std::make_unique<PCMDecoder>();
         if (pcm->Open(source->audioData.data(), source->audioData.size())) {
             decoder = std::move(pcm);
         }
-    }
 
-    // Stub decoders (Vorbis, MP3, FLAC) currently return false from Open()
-    // and are intentionally excluded from the fallback chain until their
-    // underlying libraries are integrated.
+        // Then try OGG Vorbis.
+        if (!decoder) {
+            auto vorbis = std::make_unique<VorbisDecoder>();
+            if (vorbis->Open(source->audioData.data(), source->audioData.size())) {
+                decoder = std::move(vorbis);
+            }
+        }
+
+        // Remaining codec stubs currently return false from Open().
+        if (!decoder) {
+            auto mp3 = std::make_unique<MP3Decoder>();
+            if (mp3->Open(source->audioData.data(), source->audioData.size())) {
+                decoder = std::move(mp3);
+            }
+        }
+        if (!decoder) {
+            auto flac = std::make_unique<FLACDecoder>();
+            if (flac->Open(source->audioData.data(), source->audioData.size())) {
+                decoder = std::move(flac);
+            }
+        }
+    }
 
     if (!decoder) {
         memoryBudget_.free_compressed(size);
@@ -181,6 +233,19 @@ UNAudioSourceHandle AudioEngine::LoadAudio(const uint8_t* data, size_t size,
     if (fmt.sampleRate > 0 && source->clipInfo.totalFrames > 0) {
         source->clipInfo.lengthInSeconds =
             static_cast<float>(source->clipInfo.totalFrames) / fmt.sampleRate;
+    }
+
+    // Wrap decoder in ResamplingDecoder if source rate differs from output rate.
+    // Pre-validate format to avoid moving ownership into Init() on a path that would fail.
+    if (fmt.sampleRate > 0 && fmt.channels > 0 && fmt.sampleRate != config_.sampleRate) {
+        auto resampler = std::make_unique<ResamplingDecoder>();
+        if (resampler->Init(std::move(decoder), config_.sampleRate)) {
+            decoder = std::move(resampler);
+        } else {
+            // Init moved ownership away and failed — decoder is now null.
+            memoryBudget_.free_compressed(size);
+            return -1;
+        }
     }
 
     source->decoder = std::move(decoder);
@@ -359,8 +424,38 @@ void AudioEngine::SetMasterVolume(float volume) {
 float AudioEngine::GetMasterVolume() const { return masterVolume_; }
 
 void AudioEngine::SetBufferSize(int32_t frames) {
+    if (frames <= 0) return;
+
+    UNAudioOutputConfig oldConfig = config_;
     config_.bufferSize = frames;
-    // TODO: Reconfigure output
+
+    if (!output_) {
+        dspClock_.bufferSize = config_.bufferSize;
+        return;
+    }
+
+    output_->Stop();
+    bool restarted =
+        output_->Initialize(config_, &AudioRenderBridge, this) &&
+        output_->Start();
+
+    if (!restarted) {
+        config_ = oldConfig;
+        bool rolledBack =
+            output_->Initialize(config_, &AudioRenderBridge, this) &&
+            output_->Start();
+        if (!rolledBack) {
+            initialized_.store(false, std::memory_order_release);
+            return;
+        }
+    }
+
+    int32_t actualSampleRate = output_->GetActualSampleRate();
+    int32_t actualBufferSize = output_->GetActualBufferSize();
+    if (actualSampleRate > 0) config_.sampleRate = actualSampleRate;
+    if (actualBufferSize > 0) config_.bufferSize = actualBufferSize;
+    dspClock_.sampleRate = config_.sampleRate;
+    dspClock_.bufferSize = config_.bufferSize;
 }
 
 float AudioEngine::GetCurrentLatency() const {
