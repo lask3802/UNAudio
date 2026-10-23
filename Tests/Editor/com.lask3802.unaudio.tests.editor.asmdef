@@ -1,9 +1,11 @@
 {
     "name": "com.lask3802.unaudio.tests.editor",
-    "rootNamespace": "UNAudio.Tests.Editor",
+    "rootNamespace": "UNAudio.Tests",
     "references": [
         "com.lask3802.unaudio",
-        "com.lask3802.unaudio.editor"
+        "com.lask3802.unaudio.editor",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
     ],
     "includePlatforms": [
         "Editor"

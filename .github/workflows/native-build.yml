@@ -4,98 +4,111 @@ on:
   push:
     branches: [ main, develop ]
     paths:
-      - 'Native/**'
+      - 'Native~/**'
       - '.github/workflows/native-build.yml'
   pull_request:
     branches: [ main, develop ]
     paths:
-      - 'Native/**'
+      - 'Native~/**'
       - '.github/workflows/native-build.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# Unity ignores folders ending in "~", so the C++ sources live in Native~/.
+# Desktop jobs build the plugin plus the gtest suite (Null / Manual devices, no audio
+# hardware needed) and upload binaries laid out like Runtime/Plugins/.
+
 jobs:
-  build-linux:
-    name: Build (Linux x86_64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-
-      - name: Configure CMake
-        run: |
-          cd Native
-          mkdir -p build && cd build
-          cmake .. -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        run: |
-          cd Native/build
-          cmake --build . --config Release
-
-      - name: Verify exported symbols
-        run: |
-          nm -D Native/build/libUNAudio.so | grep "T UNAudio_"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: libUNAudio-linux-x64
-          path: Native/build/libUNAudio.so
-
-  build-macos:
-    name: Build (macOS x86_64)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure CMake
-        run: |
-          cd Native
-          mkdir -p build && cd build
-          cmake .. -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        run: |
-          cd Native/build
-          cmake --build . --config Release
-
-      - name: Verify exported symbols
-        run: |
-          nm -gU Native/build/libUNAudio.dylib | grep "_UNAudio_"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: libUNAudio-macos-x64
-          path: Native/build/libUNAudio.dylib
-
-  build-windows:
-    name: Build (Windows x64)
+  windows:
+    name: Windows x64 (MSVC)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Configure CMake
-        run: |
-          cd Native
-          mkdir build
-          cd build
-          cmake .. -G "Visual Studio 17 2022" -A x64
-
+      - name: Configure
+        run: cmake -S Native~ -B build -G "Visual Studio 17 2022" -A x64 -DUNAUDIO_BUILD_TESTS=ON
       - name: Build
-        run: |
-          cd Native/build
-          cmake --build . --config Release
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: build/Release/UNAudioTests.exe --gtest_brief=1
+      - uses: actions/upload-artifact@v4
         with:
-          name: UNAudio-windows-x64
-          path: Native/build/Release/UNAudio.dll
+          name: plugin-windows-x86_64
+          path: build/Release/UNAudio.dll
+
+  linux:
+    name: Linux x64 (GCC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libasound2-dev
+      - name: Configure
+        run: cmake -S Native~ -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUNAUDIO_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build
+      - name: Exported symbols
+        run: nm -D --defined-only build/libUNAudio.so | grep " T una_"
+      - name: Test
+        run: build/UNAudioTests --gtest_brief=1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-linux-x86_64
+          path: build/libUNAudio.so
+
+  macos:
+    name: macOS universal (Clang)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S Native~ -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUNAUDIO_BUILD_TESTS=ON "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+      - name: Build
+        run: cmake --build build
+      - name: Exported symbols
+        run: nm -gU build/libUNAudio.dylib | grep " _una_"
+      - name: Test
+        run: build/UNAudioTests --gtest_brief=1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-macos-universal
+          path: build/libUNAudio.dylib
+
+  ios:
+    name: iOS arm64 (static)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S Native~ -B build -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+      - name: Build
+        run: cmake --build build --config Release -- -sdk iphoneos CODE_SIGNING_ALLOWED=NO
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-ios-arm64
+          path: build/Release-iphoneos/libUNAudio.a
+
+  android:
+    name: Android (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        abi: [ arm64-v8a, armeabi-v7a, x86_64 ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Configure
+        run: >
+          cmake -S Native~ -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake
+          -DANDROID_ABI=${{ matrix.abi }} -DANDROID_PLATFORM=android-23
+      - name: Build
+        run: cmake --build build
+      - name: Exported symbols
+        run: $ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm -D --defined-only build/libUNAudio.so | grep " T una_"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-android-${{ matrix.abi }}
+          path: build/libUNAudio.so

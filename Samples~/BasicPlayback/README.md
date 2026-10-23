@@ -1,25 +1,3 @@
-# BasicPlayback Sample
+# Basic Playback
 
-This sample demonstrates basic audio playback using UNAudio.
-
-## Usage
-
-1. Add a `UNAudioSource` component to a GameObject.
-2. Assign a `UNAudioClip` asset.
-3. Call `Play()` at runtime.
-
-```csharp
-using UNAudio;
-
-public class BasicPlaybackExample : MonoBehaviour
-{
-    public UNAudioClip clip;
-
-    void Start()
-    {
-        var source = gameObject.AddComponent<UNAudioSource>();
-        source.clip = clip;
-        source.Play();
-    }
-}
-```
+把 `.ogg` / `.wav` 切換成 UNAudio importer（Assets ▸ UNAudio ▸ Import as UNAudio Asset），指定到 `BasicPlaybackExample` 的 `sound` / `music` 欄位，進 Play Mode 後用畫面上的按鈕播放、loop、淡出。

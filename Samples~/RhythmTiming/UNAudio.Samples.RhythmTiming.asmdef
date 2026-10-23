@@ -1,0 +1,8 @@
+{
+    "name": "UNAudio.Samples.RhythmTiming",
+    "rootNamespace": "UNAudio.Samples",
+    "references": [
+        "com.lask3802.unaudio"
+    ],
+    "autoReferenced": false
+}

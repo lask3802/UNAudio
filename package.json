@@ -1,10 +1,9 @@
 {
     "name": "com.lask3802.unaudio",
-    "version": "0.1.0",
-    "displayName": "UNAudio - Unity Native Audio Engine",
-    "description": "A high-performance, low-latency native audio engine designed for Unity. Supports compressed-in-memory playback, cross-platform native output (WASAPI, CoreAudio, ALSA, Oboe), and ultra-low latency (<10ms).",
-    "unity": "2020.3",
-    "unityRelease": "0f1",
+    "version": "2.0.0",
+    "displayName": "UNAudio - Low-Latency Native Audio",
+    "description": "Low-latency native audio engine for Unity. Plays Ogg Vorbis / WAV straight from AssetBundles (zero managed copy) with native async decoding, sample-exact scheduling and a smoothed audible-time clock. Backends: WASAPI, CoreAudio, AAudio/OpenSL ES (Oboe), ALSA.",
+    "unity": "6000.0",
     "documentationUrl": "https://github.com/lask3802/UNAudio/blob/main/Documentation/GettingStarted.md",
     "changelogUrl": "https://github.com/lask3802/UNAudio/blob/main/CHANGELOG.md",
     "licensesUrl": "https://github.com/lask3802/UNAudio/blob/main/LICENSE",
@@ -17,28 +16,30 @@
         "audio",
         "native",
         "low-latency",
-        "compressed-audio",
-        "cross-platform"
+        "ogg",
+        "vorbis",
+        "assetbundle",
+        "rhythm"
     ],
     "author": {
-        "name": "UNAudio Team",
+        "name": "lask3802",
         "url": "https://github.com/lask3802/UNAudio"
     },
     "samples": [
         {
             "displayName": "Basic Playback",
-            "description": "Simple audio playback example using UNAudioSource.",
+            "description": "Load an imported UNAudioAsset, play, stop and fade.",
             "path": "Samples~/BasicPlayback"
         },
         {
-            "displayName": "3D Audio",
-            "description": "Spatial 3D audio with UNAudioListener and UNAudioSource.",
-            "path": "Samples~/3DAudio"
+            "displayName": "AssetBundle Loading",
+            "description": "Load Ogg audio out of an AssetBundle with native async decoding.",
+            "path": "Samples~/AssetBundleLoading"
         },
         {
-            "displayName": "Music Game",
-            "description": "Ultra-low-latency audio for rhythm / music games.",
-            "path": "Samples~/MusicGame"
+            "displayName": "Rhythm Timing",
+            "description": "Sample-exact scheduling and audible-time judgement for music games.",
+            "path": "Samples~/RhythmTiming"
         }
     ],
     "dependencies": {}

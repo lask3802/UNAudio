@@ -1,70 +1,112 @@
+using System;
 using System.IO;
-using UnityEngine;
-#if UNITY_EDITOR
 using UnityEditor;
 using UnityEditor.AssetImporters;
+using UnityEngine;
 
 namespace UNAudio.Editor
 {
     /// <summary>
-    /// Custom ScriptedImporter that intercepts audio files and creates
-    /// <see cref="UNAudioClip"/> assets with the chosen compression mode.
+    /// Imports .ogg / .wav as a <see cref="UNAudioAsset"/> whose data is the original file,
+    /// untouched (no re-encode, no AudioClip). It is an importer <i>override</i>: Unity keeps
+    /// importing other audio files as AudioClips. Switch a file with
+    /// Assets ▸ UNAudio ▸ Import as UNAudio Asset, or in code with
+    /// <see cref="UNAudioImporterUtility.UseUNAudio(string)"/>.
     /// </summary>
-    [ScriptedImporter(1, new[] { "una" })]
-    public class UNAudioImporter : ScriptedImporter
+    [ScriptedImporter(2, null, new[] { "ogg", "wav" })]
+    public sealed class UNAudioImporter : ScriptedImporter
     {
-        [Tooltip("How the audio data is stored in memory.")]
-        public AudioLoadType compressionMode = AudioLoadType.CompressedInMemory;
-
-        [Tooltip("Preload audio data when the scene loads.")]
-        public bool preloadAudioData;
-
-        [Tooltip("Load audio data on a background thread.")]
-        public bool loadInBackground = true;
+        [Tooltip("Decode: whole clip to PCM in the background (sound effects). Stream: decode while playing (music).")]
+        public UNAudioLoadMode loadMode = UNAudioLoadMode.Decode;
+        [Tooltip("PCM storage for decoded clips. Int16 halves memory.")]
+        public UNAudioSampleFormat sampleFormat = UNAudioSampleFormat.Int16;
+        [Tooltip("Keep the file's sample rate and resample while mixing instead of at load time.")]
+        public bool keepSourceRate;
+        [Tooltip("Higher loads first when many clips decode at once.")]
+        public int priority;
 
         public override void OnImportAsset(AssetImportContext ctx)
         {
-            // Read raw file bytes
-            byte[] audioData = File.ReadAllBytes(ctx.assetPath);
+            byte[] bytes = File.ReadAllBytes(ctx.assetPath);
+            string baseName = Path.GetFileNameWithoutExtension(ctx.assetPath);
 
-            // Create the clip ScriptableObject
-            var clip = ScriptableObject.CreateInstance<UNAudioClip>();
-            clip.name = Path.GetFileNameWithoutExtension(ctx.assetPath);
-
-            // Try to extract real metadata from audio headers (WAV, OGG, etc.)
-            if (AudioHeaderParser.TryParse(audioData, out AudioMetadata meta))
+            UNAudioClipInfo info = default;
+            string format = Path.GetExtension(ctx.assetPath).TrimStart('.').ToLowerInvariant() == "wav" ? "wav" : "vorbis";
+            try
             {
-                clip.SetMetadata(
-                    sr:     meta.sampleRate,
-                    ch:     meta.channels,
-                    bps:    meta.bitsPerSample,
-                    len:    meta.lengthInSeconds,
-                    frames: meta.totalFrames,
-                    data:   audioData
-                );
+                if (!UNAudioClip.TryProbe(bytes, out info))
+                    ctx.LogImportError($"UNAudio: '{ctx.assetPath}' is not a supported Ogg Vorbis / WAV file.");
             }
-            else
+            catch (DllNotFoundException)
             {
-                // Non-WAV format (mp3, ogg, flac) — metadata will be populated
-                // at runtime when the native engine decodes the file.
-                clip.SetMetadata(
-                    sr:     0,
-                    ch:     0,
-                    bps:    0,
-                    len:    0f,
-                    frames: 0,
-                    data:   audioData
-                );
-
-                string ext = Path.GetExtension(ctx.assetPath).ToLowerInvariant();
-                ctx.LogImportWarning(
-                    $"Could not parse audio header for '{ext}' format. " +
-                    "Metadata will be populated at runtime after native decode.");
+                ctx.LogImportWarning("UNAudio: native plugin not found; metadata left empty. Build Native/ and copy the plugin into Runtime/Plugins.");
             }
 
-            ctx.AddObjectToAsset("main", clip);
-            ctx.SetMainObject(clip);
+            var data = new TextAsset(new ReadOnlySpan<byte>(bytes)) { name = baseName + ".data" };
+            var asset = ScriptableObject.CreateInstance<UNAudioAsset>();
+            asset.name = baseName;
+            var options = new UNAudioLoadOptions
+            {
+                mode = loadMode,
+                sampleFormat = sampleFormat,
+                keepSourceRate = keepSourceRate,
+                priority = priority,
+            };
+            asset.EditorSetup(data, options, info, format);
+
+            ctx.AddObjectToAsset("data", data);
+            ctx.AddObjectToAsset("main", asset, EditorGUIUtility.IconContent("AudioClip Icon").image as Texture2D);
+            ctx.SetMainObject(asset);
+        }
+    }
+
+    public static class UNAudioImporterUtility
+    {
+        /// <summary>Imports an .ogg/.wav as a UNAudioAsset instead of an AudioClip.</summary>
+        public static void UseUNAudio(string assetPath)
+        {
+            AssetDatabase.SetImporterOverride<UNAudioImporter>(assetPath);
+        }
+
+        /// <summary>Restores Unity's AudioClip import.</summary>
+        public static void UseAudioClip(string assetPath)
+        {
+            AssetDatabase.ClearImporterOverride(assetPath);
+        }
+
+        static bool IsAudio(string path)
+        {
+            var ext = Path.GetExtension(path).ToLowerInvariant();
+            return ext == ".ogg" || ext == ".wav";
+        }
+
+        [MenuItem("Assets/UNAudio/Import as UNAudio Asset", false, 1100)]
+        static void UseSelected()
+        {
+            foreach (var guid in Selection.assetGUIDs)
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (IsAudio(path)) UseUNAudio(path);
+            }
+        }
+
+        [MenuItem("Assets/UNAudio/Import as Unity AudioClip", false, 1101)]
+        static void RevertSelected()
+        {
+            foreach (var guid in Selection.assetGUIDs)
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (IsAudio(path)) UseAudioClip(path);
+            }
+        }
+
+        [MenuItem("Assets/UNAudio/Import as UNAudio Asset", true)]
+        [MenuItem("Assets/UNAudio/Import as Unity AudioClip", true)]
+        static bool ValidateSelection()
+        {
+            foreach (var guid in Selection.assetGUIDs)
+                if (IsAudio(AssetDatabase.GUIDToAssetPath(guid))) return true;
+            return false;
         }
     }
 }
-#endif

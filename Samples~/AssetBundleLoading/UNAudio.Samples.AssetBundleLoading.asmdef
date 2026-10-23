@@ -1,0 +1,8 @@
+{
+    "name": "UNAudio.Samples.AssetBundleLoading",
+    "rootNamespace": "UNAudio.Samples",
+    "references": [
+        "com.lask3802.unaudio"
+    ],
+    "autoReferenced": false
+}

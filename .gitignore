@@ -1,6 +1,6 @@
 # Build artifacts
-Native/build*/
-Native/build*.meta
+Native~/build*/
+Native~/build*.meta
 *.o
 *.obj
 *.dll
@@ -32,12 +32,12 @@ Logs/
 UserSettings/
 *.csproj
 *.unityproj
-*.meta
 
 # Local/sample workspaces
 SampleProject~/
 docs/plans/
 Plugins/
+Plugins.meta
 
 # CMake
 CMakeFiles/

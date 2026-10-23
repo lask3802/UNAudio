@@ -3,61 +3,55 @@ using UnityEngine;
 namespace UNAudio.Samples
 {
     /// <summary>
-    /// Demonstrates basic audio playback using UNAudioSource.
-    /// Assign a UNAudioClip in the Inspector and press Play.
+    /// Play / stop / fade an imported UNAudioAsset. Assign an .ogg or .wav that was switched to
+    /// the UNAudio importer (Assets ▸ UNAudio ▸ Import as UNAudio Asset).
+    /// Uses IMGUI buttons so it runs with either input backend.
     /// </summary>
     public class BasicPlaybackExample : MonoBehaviour
     {
-        [Header("Audio")]
-        [Tooltip("The audio clip to play.")]
-        public UNAudioClip clip;
+        public UNAudioAsset sound;
+        public UNAudioAsset music;
 
-        [Tooltip("Play automatically on Start.")]
-        public bool playOnAwake = true;
+        UNAudioVoice m_Music;
 
-        private UNAudioSource source;
-
-        private void Start()
+        async void Start()
         {
-            source = GetComponent<UNAudioSource>();
-            if (source == null)
-                source = gameObject.AddComponent<UNAudioSource>();
-
-            source.clip = clip;
-
-            if (playOnAwake && clip != null)
-                source.Play();
+            // Decoding runs on native worker threads; await it during loading.
+            if (sound != null) await sound.LoadAsync();
+            if (music != null) await music.LoadAsync();
+            Debug.Log($"UNAudio ready: {UNAudioEngine.Device}");
         }
 
-        private void OnGUI()
+        void OnGUI()
         {
-            GUILayout.BeginArea(new Rect(10, 10, 300, 200));
-            GUILayout.Label("UNAudio - Basic Playback", GUI.skin.box);
-
-            if (source == null || clip == null)
+            if (GUILayout.Button("Play sound") && sound != null && sound.Clip.IsReady)
             {
-                GUILayout.Label("Assign a UNAudioClip in the Inspector.");
-                GUILayout.EndArea();
-                return;
+                var p = UNAudioPlayParams.Default;
+                p.pitch = Random.Range(0.9f, 1.1f);
+                p.pan = Random.Range(-0.5f, 0.5f);
+                sound.Play(p);
             }
+            if (GUILayout.Button(m_Music.IsAlive ? "Stop music" : "Loop music") && music != null && music.Clip.IsReady)
+            {
+                if (m_Music.IsAlive)
+                {
+                    m_Music.Stop();
+                }
+                else
+                {
+                    var p = UNAudioPlayParams.Default;
+                    p.loop = true;
+                    p.fadeInSeconds = 0.5f;
+                    p.bus = 1;  // music bus
+                    m_Music = music.Play(p);
+                }
+            }
+            if (GUILayout.Button("Fade out music") && m_Music.IsAlive) m_Music.Stop(fadeSeconds: 1.5f);
 
-            GUILayout.Label($"Clip: {clip.name}");
-            GUILayout.Label($"Sample Rate: {clip.sampleRate} Hz");
-            GUILayout.Label($"Channels: {clip.channels}");
-            GUILayout.Label($"Length: {clip.length:F2}s");
-            GUILayout.Label($"Playing: {source.isPlaying}");
-            GUILayout.Label($"Time: {source.playbackTime:F2}s");
-
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Play")) source.Play();
-            if (GUILayout.Button("Pause")) source.Pause();
-            if (GUILayout.Button("Stop")) source.Stop();
-            GUILayout.EndHorizontal();
-
-            source.volume = GUILayout.HorizontalSlider(source.volume, 0f, 1f);
-            GUILayout.Label($"Volume: {source.volume:F2}");
-
-            GUILayout.EndArea();
+            var stats = UNAudioEngine.IsInitialized ? UNAudioEngine.GetStats() : default;
+            GUILayout.Label($"Voices {stats.ActiveVoices}  CPU {stats.CpuLoad * 100f:F1}%  " +
+                            $"Latency {UNAudioClock.OutputLatency * 1000.0:F1} ms");
+            if (m_Music.IsAlive) GUILayout.Label($"Music at {m_Music.Time:F3} s");
         }
     }
 }

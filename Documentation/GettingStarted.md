@@ -1,108 +1,115 @@
-# Getting Started with UNAudio
+# Getting Started
 
-## 前置需求 (Prerequisites)
+## 1. 安裝與原生外掛
 
-- Unity 2020.3 or later
-- .NET Standard 2.1
-- C++ compiler (MSVC / Clang / GCC) for native library builds
-- CMake 3.22+
-
----
-
-## 安裝 (Installation)
-
-### Unity Package Manager（推薦）
-
-1. Open the Unity Package Manager.
-2. Click **+** → **Add package from git URL**.
-3. Enter: `https://github.com/lask3802/UNAudio.git`
-
-### 手動安裝
-
-1. Clone or download this repository.
-2. Copy the folder into `Packages/com.lask3802.unaudio/`.
-
----
-
-## 建置原生庫 (Building the Native Library)
-
-### Windows
-
-```bash
-cd Native
-mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A x64
-cmake --build . --config Release
-```
-
-### macOS
-
-```bash
-cd Native
-mkdir build && cd build
-cmake .. -G Xcode
-cmake --build . --config Release
-```
-
-### Linux
-
-```bash
-cd Native
-mkdir build && cd build
-cmake .. -G "Unix Makefiles"
-cmake --build . --config Release
-```
-
-Copy the compiled library to `Runtime/Plugins/<platform>/`.
-
----
-
-## 快速開始 (Quick Start)
-
-### 1. 初始化引擎
-
-引擎會在場景中自動初始化。你也可以手動存取：
+照 [README](../README.md#安裝) 用 git URL 安裝，並把對應平台的原生外掛放進 `Runtime/Plugins/`。確認方式：進入 Play Mode 後執行
 
 ```csharp
-var engine = UNAudioEngine.Instance;
-engine.SetBufferSize(128);   // lower latency
-engine.SetMasterVolume(0.8f);
+Debug.Log(UNAudioEngine.Device);   // 例：Wasapi 48000 Hz 2 ch, period 480 (10.00 ms), latency 960 (20.00 ms)
 ```
 
-### 2. 播放音效
+找不到外掛時會丟 `DllNotFoundException`；輸出裝置開不起來時引擎會退回 Null device（時間照走、沒有聲音）並印出警告。
+
+## 2. 匯入音檔
+
+選取 `.ogg` 或 `.wav` → **Assets ▸ UNAudio ▸ Import as UNAudio Asset**。這是 importer override，只影響你選的檔案，其他音檔仍是 AudioClip。要改回來用 **Import as Unity AudioClip**。程式化切換：`UNAudioImporterUtility.UseUNAudio(path)`。
+
+Importer 設定：
+
+| 欄位 | 建議 |
+|---|---|
+| Load Mode | 音效用 `Decode`（整段解成 PCM，播放零成本）；長音樂用 `Stream`（記憶體只放壓縮資料） |
+| Sample Format | `Int16` 記憶體減半，對遊戲音效足夠；需要後製級動態範圍才用 `Float32` |
+| Keep Source Rate | 關閉（預設）時在解碼階段重取樣到裝置取樣率，mixer 走最快路徑；開啟可省記憶體但每次播放都要即時重取樣 |
+| Priority | 同時載入很多檔案時，數字大的先解碼 |
+
+## 3. 初始化（可選）
+
+第一次用到 clip 或 voice 時會自動以 `UNAudioEngine.DefaultConfig` 初始化。要自訂就在那之前呼叫：
 
 ```csharp
-using UNAudio;
-
-public class MyPlayer : MonoBehaviour
+UNAudioEngine.Initialize(new UNAudioConfig
 {
-    public UNAudioClip clip;
-
-    void Start()
-    {
-        var source = gameObject.AddComponent<UNAudioSource>();
-        source.clip = clip;
-        source.Play();
-    }
-}
+    bufferFrames = 0,      // 0 = 裝置支援的最小 period
+    exclusive = true,      // WASAPI exclusive / AAudio exclusive：延遲最低，但獨佔裝置
+    maxVoices = 128,
+});
 ```
 
-### 3. 一次性播放
+## 4. 載入與播放
 
 ```csharp
-UNAudioSource.PlayOneShot(clip);
+UNAudioClip clip = asset.Load();           // 立刻回傳，native 背景解碼
+await clip.WhenReady;                      // 第一段解完就可以播
+UNAudioVoice v = clip.Play();
+
+var p = UNAudioPlayParams.Default;
+p.volume = 0.8f; p.pan = -0.3f; p.pitch = 1.2f; p.loop = true; p.bus = 2;
+p.fadeInSeconds = 0.25f;
+v = clip.Play(p);
+
+v.SetVolume(0.3f, rampSeconds: 0.5f);
+v.Pause(); v.Resume();
+v.Seek(12.5);
+v.Stop(fadeSeconds: 1f);
+
+clip.Dispose();                            // 播放中的 voice 會播完才真正釋放
 ```
 
-### 4. 3D 空間音效
+`UNAudioAsset.Clip` 是共用的 clip（第一次存取時載入），適合「這個資產就是一個音效」的用法；`asset.Load()` 每次建立獨立的 clip。
+
+Coroutine 版本：`yield return clip.WaitUntilReady();`
+
+## 5. 從 AssetBundle / bytes / 檔案載入
 
 ```csharp
-UNAudioSource.PlayClipAtPoint(clip, transform.position);
+await UNAudioAssetBundles.LoadClipAsync(bundle, "explosion");   // UNAudioAsset 或 .bytes TextAsset
+UNAudioClip.Load(textAsset);                                     // 任何含 OGG/WAV 的 TextAsset
+UNAudioClip.Load(nativeArray);                                   // 例如 UnityWebRequest 下載的資料
+UNAudioClip.Load(bytes);                                         // managed byte[]
+UNAudioClip.LoadFile(path);                                      // native worker 讀檔
 ```
 
----
+`LoadFile` 只接受一般檔案系統路徑；Android 的 StreamingAssets 在 APK 裡，請改用 TextAsset 或先讀成 bytes。
 
-## 下一步 (Next Steps)
+**Borrow（零複製）**：`new UNAudioLoadOptions { borrow = true }` 讓 native 直接讀你的記憶體。TextAsset 的參照由 clip 保管，但 `AssetBundle.Unload(true)` 仍會銷毀它，所以要等 `clip.IsSourceReleased` 才能卸載。不確定時用預設的複製模式：只有 native 端一次 memcpy，沒有 managed 配置。
 
-- Read the [API Reference](API.md) for the full API surface.
-- See the [Performance Guide](PerformanceGuide.md) for latency tuning.
-- Check the `Samples~/` folder for complete example projects.
+## 6. 時間
+
+| 你想知道 | 用 |
+|---|---|
+| 玩家此刻聽到 voice 的哪裡（秒） | `voice.Time` |
+| 同一幀內一致的值 | `voice.GetTiming(UNAudioClock.FrameHostNs).AudibleSeconds` |
+| 某個輸入事件發生時聽到哪裡 | `voice.GetTiming(UNAudioClock.RealtimeToHostNs(eventRealtime))` |
+| 現在可以排程的最早 frame | `UNAudioClock.EarliestScheduleFrame()` |
+| 讓聲音在 x 秒後被聽到 | `clip.PlayScheduled(UNAudioClock.DspFrameHeardIn(x))` |
+| 輸出延遲 | `UNAudioClock.OutputLatency` |
+
+所有控制（Stop / Pause / Resume / Seek / SetVolume / SetPan / SetPitch / bus pause）都可以帶 `atDspFrame`，在那個樣本上生效。
+
+## 7. Bus 與 master
+
+16 條 bus，voice 預設在 bus 0。
+
+```csharp
+UNAudioEngine.SetBusVolume(1, 0.5f, rampSeconds: 0.3f);   // 例如音樂
+UNAudioEngine.SetBusPaused(2, true);                      // 例如暫停選單時的遊戲音效
+UNAudioEngine.SetMasterVolume(0.8f);
+```
+
+## 8. 事件
+
+```csharp
+UNAudioEngine.VoiceStarted += (voice, dspFrame) => { };
+UNAudioEngine.VoiceEnded   += (voice, dspFrame) => { };
+UNAudioEngine.VoiceLooped  += (voice, dspFrame) => { };
+UNAudioEngine.VoiceStarved += (voice, frames) => { };     // 解碼或串流跟不上
+UNAudioEngine.DeviceChanged += sampleRate => { };
+clip.Ready += c => { }; clip.Loaded += c => { }; clip.Failed += c => { };
+```
+
+都在主執行緒、`EarlyUpdate` 開頭觸發。
+
+## 9. 測試與離線渲染
+
+`UNAudioDeviceType.Manual` 不開音訊執行緒，由你呼叫 `UNAudioEngine.Render(buffer, frames)` 推進時間，適合單元測試與離線輸出；`Null` 以真實速度跑但丟掉輸出，適合 CI 與 server。
