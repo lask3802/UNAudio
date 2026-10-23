@@ -47,7 +47,13 @@ namespace UNAudio
         static int s_Session;
         static int s_MainThreadId;
         static UNAudioResult s_LazyInitFailure;  // remembered so lazy init does not retry every call
-        static UNAudioDeviceInfo s_Device;
+        // Replaced whole, never written in place: UNAudioClock reads Device on any thread.
+        sealed class DeviceSnapshot
+        {
+            public readonly UNAudioDeviceInfo Info;
+            public DeviceSnapshot(in una_device_info i) { Info = new UNAudioDeviceInfo(i); }
+        }
+        static volatile DeviceSnapshot s_Device;
         static readonly una_event[] s_Events = new una_event[256];
         internal static readonly Dictionary<uint, UNAudioClip> LiveClips = new Dictionary<uint, UNAudioClip>();
         // Errors of recently failed voices (this session), oldest dropped first.
@@ -69,7 +75,7 @@ namespace UNAudio
             get
             {
                 EnsureInitialized();
-                return s_Device;
+                return s_Device.Info;
             }
         }
 
@@ -110,7 +116,7 @@ namespace UNAudio
 
             una_device_info info;
             UNAudioNative.una_get_device_info(&info);
-            s_Device = new UNAudioDeviceInfo(info);
+            s_Device = new DeviceSnapshot(info);
             s_Initialized = true;
             s_Session++;
             UNAudioPlayerLoop.Install();
@@ -202,20 +208,24 @@ namespace UNAudio
             if (!s_Initialized) return;
             UNAudioClock.Refresh();
             UNAudioNative.una_update();
-            RefreshDeviceLatency();
+            RefreshDevice();
             DispatchEvents();
             UNAudioPreloader.Tick();
         }
 
         // Once per frame rather than per Device read: UNAudioClock's conversions read Device on any
-        // thread, and the native call takes the engine's control lock. The format itself only
-        // changes with DeviceChanged.
-        static void RefreshDeviceLatency()
+        // thread, and the native call takes the engine's control lock. Copies every field, not just
+        // the latency, so a DeviceChanged event dropped from a full event queue cannot leave a stale
+        // sample rate behind.
+        static void RefreshDevice()
         {
             una_device_info info;
-            if (UNAudioNative.una_get_device_info(&info) == 0 && info.sample_rate == s_Device.SampleRate &&
-                info.latency_frames != s_Device.LatencyFrames)
-                s_Device = new UNAudioDeviceInfo(info);
+            if (UNAudioNative.una_get_device_info(&info) != 0) return;
+            var d = s_Device.Info;
+            if (info.sample_rate != d.SampleRate || info.channels != d.Channels || info.buffer_frames != d.BufferFrames ||
+                info.latency_frames != d.LatencyFrames || (info.exclusive != 0) != d.Exclusive ||
+                info.backend != (int)d.Backend)
+                s_Device = new DeviceSnapshot(info);
         }
 
         static void DispatchEvents()
@@ -268,7 +278,7 @@ namespace UNAudio
                 case 20:
                     una_device_info info;
                     UNAudioNative.una_get_device_info(&info);
-                    s_Device = new UNAudioDeviceInfo(info);
+                    s_Device = new DeviceSnapshot(info);
                     DeviceChanged?.Invoke((int)e.value);
                     break;
             }

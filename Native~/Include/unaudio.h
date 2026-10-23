@@ -308,7 +308,7 @@ typedef enum una_event_type {
     UNA_EVENT_VOICE_ERROR          = 14, /* value = una_result; a stream voice could
                                             not decode (open or seek failed, or the
                                             decoder ran out of data before the
-                                            declared length) after playing all it
+                                            length found at load) after playing all it
                                             decoded. VOICE_ENDED follows at the
                                             same dsp_frame. What counts as damage
                                             depends on the format: see API.md.

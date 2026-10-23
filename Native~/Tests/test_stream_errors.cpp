@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <string>
 #include <thread>
 
 using namespace test;
@@ -208,13 +209,50 @@ TEST(StreamErrors, TruncatedFilesOpenWithTheLengthTheyDeliver) {
             }
             ++opened;
             EXPECT_LT(pipe.TotalFrames(), whole.TotalFrames());
-            int64_t n = 0;
-            for (int got; (got = pipe.Read(out, 4096)) > 0;) n += got;
-            EXPECT_EQ(n, pipe.TotalFrames());
+            while (pipe.Read(out, 4096) > 0) {}
             EXPECT_FALSE(pipe.SourceEndedEarly());
         }
         if (c.opensWhenCut) EXPECT_GT(opened, 0);
         else EXPECT_EQ(opened, 0);
+    }
+    // A FLAC without a STREAMINFO length has nothing to check the end against: it is counted.
+    auto flac = ReadFixture("flac_48k_stereo_16.flac");
+    flac[21] &= 0xF0;  // the 36-bit total: low nibble of byte 21, bytes 22-25
+    std::fill(flac.begin() + 22, flac.begin() + 26, uint8_t(0));
+    flac.resize(flac.size() * 3 / 4);
+    una::DecodePipeline pipe;
+    ASSERT_EQ(pipe.Open(flac.data(), flac.size(), 0), UNA_OK);
+    EXPECT_GT(pipe.TotalFrames(), 0);
+    EXPECT_LT(pipe.TotalFrames(), 48000);
+    while (pipe.Read(out, 4096) > 0) {}
+    EXPECT_FALSE(pipe.SourceEndedEarly());
+}
+
+// Damage in the middle of a file that opened fine, against the format table in API.md: FLAC
+// drops the frame that fails its CRC and comes up short at the end, Vorbis stops at a page it
+// cannot decode, MP3 never comes up short (a damaged header shortens the length at open).
+TEST(StreamErrors, MidFileDamageMatchesTheFormatTable) {
+    struct Case { const char* name; int length; bool endsEarly; };
+    // stb_vorbis skips Ogg page CRCs, so a few damaged bytes decode as distorted audio.
+    const Case cases[] = {{"flac_48k_stereo_16.flac", 16, true},  {"flac_48k_stereo_16.flac", 512, true},
+                          {"tone_48k_stereo_3s.ogg", 512, true},  {"tone_48k_stereo_3s.ogg", 16, false},
+                          {"mp3_44k_stereo_cbr.mp3", 16, false},
+                          {"mp3_44k_stereo_cbr.mp3", 512, false}, {"mp3_44k_stereo_vbr.mp3", 512, false}};
+    std::vector<float> l(4096), r(4096);
+    float* out[2] = {l.data(), r.data()};
+    for (const Case& c : cases) {
+        SCOPED_TRACE(std::string(c.name) + " " + std::to_string(c.length));
+        auto bytes = ReadFixture(c.name);
+        const size_t at = bytes.size() / 2;
+        for (int i = 0; i < c.length; ++i) bytes[at + size_t(i)] ^= 0x5A;
+        una::DecodePipeline pipe;
+        ASSERT_EQ(pipe.Open(bytes.data(), bytes.size(), 0), UNA_OK);
+        while (pipe.Read(out, 4096) > 0) {}
+        EXPECT_EQ(pipe.SourceEndedEarly(), c.endsEarly);
+        if (c.endsEarly) {
+            EXPECT_GT(pipe.SourceEndFrame(), 0);  // what came before the damage still plays
+            EXPECT_LT(pipe.SourceEndFrame(), pipe.TotalFrames());
+        }
     }
 }
 

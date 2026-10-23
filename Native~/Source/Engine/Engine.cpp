@@ -267,8 +267,8 @@ int Engine::GetDeviceInfo(una_device_info& out) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!initialized_.load(std::memory_order_acquire)) return UNA_E_NOT_INITIALIZED;
     // Backends refine their latency once the stream reports timestamps (AAudio, CoreAudio), so
-    // the copy from Init or the last device change goes stale. Read it before taking devMutex_:
-    // a device thread may hold its own info lock while it reports a change.
+    // the copy from Init or the last device change goes stale. Read it before taking devMutex_
+    // so the backend's info lock never nests inside it.
     DeviceInfo live;
     if (device_) live = device_->Info();
     std::lock_guard<std::mutex> dl(devMutex_);

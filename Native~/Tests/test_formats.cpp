@@ -403,13 +403,25 @@ TEST(Formats, FlacWithoutLengthIsCountedAndSeekable) {
         for (size_t c = 0; c < 2; ++c)
             for (size_t i = 0; i < got[c].size(); ++i) ASSERT_EQ(got[c][i], ref[c][size_t(t) + i]) << t;
     }
-    // Stream voices reopen the bytes with the length the clip already counted.
-    auto h = una::CreateSourceDecoder(data.data(), data.size(), 48000);
+    // Stream voices reopen the bytes with the length the clip already counted. The hint is
+    // taken as given (a value other than the real length shows it is not counted again).
+    auto h = una::CreateSourceDecoder(data.data(), data.size(), 47000);
     ASSERT_TRUE(h);
-    EXPECT_EQ(h->Format().totalFrames, 48000);
-    EXPECT_EQ(DecodeSource(*h), ref);
-    ASSERT_TRUE(h->Seek(47000));
+    EXPECT_EQ(h->Format().totalFrames, 47000);
+    const auto hinted = DecodeSource(*h);
+    ASSERT_EQ(hinted[0].size(), 47000u);
+    for (size_t c = 0; c < 2; ++c)
+        EXPECT_TRUE(std::equal(hinted[c].begin(), hinted[c].end(), ref[c].begin())) << c;
+    ASSERT_TRUE(h->Seek(46000));
     EXPECT_EQ(DecodeSource(*h)[0].size(), 1000u);
+    una::DecodePipeline pipe;
+    ASSERT_EQ(pipe.Open(data.data(), data.size(), 0, 47000), UNA_OK);
+    EXPECT_EQ(pipe.SourceFrames(), 47000);
+    // STREAMINFO's own length wins over a hint.
+    const auto original = ReadFixture("flac_48k_stereo_16.flac");
+    auto withLength = una::CreateSourceDecoder(original.data(), original.size(), 47000);
+    ASSERT_TRUE(withLength);
+    EXPECT_EQ(withLength->Format().totalFrames, 48000);
 }
 
 TEST(Formats, GarbageAndLookalikesAreRejected) {
