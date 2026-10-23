@@ -30,10 +30,12 @@
 #pragma clang diagnostic pop
 #include <android/log.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -50,6 +52,8 @@ constexpr auto kReopenRetryFast = std::chrono::milliseconds(200); // first attem
 constexpr auto kReopenRetrySlow = std::chrono::milliseconds(1000);
 constexpr int kReopenFastAttempts = 10;
 constexpr int64_t kMaxPlausibleLatencyNs = 1000000000LL; // beyond this the anchor is stale
+// Two polls agree on an anchor; below the clock's 8 ms re-anchor threshold.
+constexpr int64_t kAnchorToleranceNs = 4000000;
 constexpr auto kPollFast = std::chrono::milliseconds(5);  // until the first anchor
 constexpr auto kPollSteady = std::chrono::milliseconds(100);
 
@@ -186,8 +190,14 @@ public:
         const int64_t rendered = framesRendered_.load(std::memory_order_relaxed);
         const int64_t anchor = anchorNs_.load(std::memory_order_acquire);
         int64_t presentNs = anchor != 0 ? anchor + FramesToNs(rendered, rtRate_) : 0;
-        if (presentNs < now || presentNs > now + kMaxPlausibleLatencyNs)
-            presentNs = now + FramesToNs(rtBufferFrames_, rtRate_);
+        if (anchor != 0 && presentNs >= now && presentNs <= now + kMaxPlausibleLatencyNs) {
+            leadNs_.store(presentNs - now, std::memory_order_relaxed);
+        } else {
+            // No usable timestamp (OpenSL ES, or AAudio before the first one after
+            // a start): the lead last measured on this stream beats the bare
+            // buffer size, which leaves out the hardware latency.
+            presentNs = now + leadNs_.load(std::memory_order_relaxed);
+        }
 
         cb_->OnRender(out, frames, rtChannels_, presentNs);
         framesRendered_.store(rendered + frames, std::memory_order_release);
@@ -236,6 +246,12 @@ private:
             ->setUsage(oboe::Usage::Game)
             ->setDataCallback(bridge_)
             ->setErrorCallback(bridge_);
+        // Test hook for shell tools such as una_device_probe (apps cannot set it):
+        // UNAUDIO_OBOE_API=opensles runs the OpenSL ES path that API 23-26 devices take.
+        if (const char* api = std::getenv("UNAUDIO_OBOE_API")) {
+            if (std::strcmp(api, "opensles") == 0) builder.setAudioApi(oboe::AudioApi::OpenSLES);
+            else if (std::strcmp(api, "aaudio") == 0) builder.setAudioApi(oboe::AudioApi::AAudio);
+        }
         if (sampleRate > 0) {
             builder.setSampleRate(sampleRate)
                 ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::Medium);
@@ -297,15 +313,24 @@ private:
         framesRendered_.store(0, std::memory_order_relaxed);
         threadNamed_.store(false, std::memory_order_relaxed);
         ResetAnchor_l();
-        latencyMeasured_ = false;
+        leadNs_.store(FramesToNs(rtBufferFrames_, rtRate_), std::memory_order_relaxed);
 
         DeviceInfo info;
         info.sampleRate = rtRate_;
         info.channels = rtChannels_;
         info.bufferFrames = toAppFrames(burst);
-        info.latencyFrames = rtBufferFrames_; // refined by the first timestamp (AAudio)
+        info.latencyFrames = rtBufferFrames_; // refined by the timestamps (AAudio)
         info.exclusive = stream_->getSharingMode() == oboe::SharingMode::Exclusive;
-        info.backend = stream_->getAudioApi() == oboe::AudioApi::AAudio ? UNA_BACKEND_AAUDIO : UNA_BACKEND_OPENSLES;
+        const bool aaudio = stream_->getAudioApi() == oboe::AudioApi::AAudio;
+        info.backend = aaudio ? UNA_BACKEND_AAUDIO : UNA_BACKEND_OPENSLES;
+        // isMMapUsed dereferences the AAudio stream, which an OpenSL ES stream lacks.
+        __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                            "Oboe stream: %s%s %s/%s, %d Hz (native %d), %d ch, burst %d, buffer %d of %d",
+                            oboe::convertToText(stream_->getAudioApi()),
+                            aaudio && oboe::OboeExtensions::isMMapUsed(stream_.get()) ? " MMAP" : "",
+                            oboe::convertToText(stream_->getSharingMode()),
+                            oboe::convertToText(stream_->getPerformanceMode()), rate, nativeRate, rtChannels_, burst,
+                            bufferFrames, stream_->getBufferCapacityInFrames());
         std::lock_guard<std::mutex> lock(infoMutex_);
         info_ = info;
         return true;
@@ -325,16 +350,21 @@ private:
     // Returns once Oboe stopped and no OnRender is running. The flag catches a
     // callback that is still in flight after an OpenSL ES stop.
     void StopStream_l() {
-        renderEnabled_.store(false);
+        const bool wasRunning = renderEnabled_.exchange(false);
         if (stream_) stream_->stop();
         while (inCallback_.load() != 0) std::this_thread::yield();
+        if (wasRunning && stream_) {
+            const auto xruns = stream_->getXRunCount();
+            __android_log_print(ANDROID_LOG_INFO, kLogTag, "Oboe stream stopped: %lld frames rendered, xruns %d",
+                                static_cast<long long>(framesRendered_.load()), xruns ? xruns.value() : -1);
+        }
         ResetAnchor_l();
     }
 
     void ResetAnchor_l() {
         anchorNs_.store(0, std::memory_order_relaxed);
         anchorConfirmed_ = false;
-        haveDelta_ = false;
+        havePending_ = false;
     }
 
     void PollLoop() {
@@ -354,8 +384,11 @@ private:
     // Maps the stream's presentation timestamp onto our rendered-frame count.
     // AAudio's frame counters can run ahead of the frames we rendered (MMAP
     // catch-up on start, skipped frames after an underrun), so the offset is
-    // re-measured on every poll and the anchor only published when two
-    // consecutive polls agree on it.
+    // re-measured on every poll. Until the hardware reports presentation, the
+    // legacy (AudioTrack) path repeats a stale position or extrapolates one from
+    // the mixer, which is off by the hardware latency (90-130 ms on the API 31
+    // emulator). So an anchor is only published once the position has moved
+    // and two consecutive polls agree on it.
     void PollTimestamp_l() {
         const auto ts = stream_->getTimestamp(CLOCK_MONOTONIC);
         if (!ts) return;
@@ -364,24 +397,26 @@ private:
         const int64_t after = framesRendered_.load(std::memory_order_acquire);
         if (before != after) return; // a callback finished in between: retry next poll
         const int64_t delta = written - before;
-        const bool agreed = haveDelta_ && AbsDiff(delta, pendingDelta_) <= deltaTolerance_;
+        const int64_t position = ts.value().position;
+        const int64_t anchor = ts.value().timestamp - FramesToNs(position - delta, rtRate_);
+        const bool agreed = havePending_ && position > pendingPosition_ &&
+                            AbsDiff(delta, pendingDelta_) <= deltaTolerance_ &&
+                            AbsDiff(anchor, pendingAnchor_) <= kAnchorToleranceNs + FramesToNs(deltaTolerance_, rtRate_);
         pendingDelta_ = delta;
-        haveDelta_ = true;
+        pendingAnchor_ = anchor;
+        pendingPosition_ = position;
+        havePending_ = true;
         if (!agreed) return;
 
-        const int64_t anchor = ts.value().timestamp - FramesToNs(ts.value().position - delta, rtRate_);
         anchorNs_.store(anchor != 0 ? anchor : 1, std::memory_order_release);
         anchorConfirmed_ = true;
 
-        if (!latencyMeasured_) {
-            // Next frame we write vs now = buffer fill + hardware latency.
-            const int64_t aheadNs = anchor + FramesToNs(after, rtRate_) - HostTimeNs();
-            const int64_t measured = aheadNs * rtRate_ / 1000000000LL;
-            if (measured > 0 && measured < rtRate_) {
-                latencyMeasured_ = true;
-                std::lock_guard<std::mutex> infoLock(infoMutex_);
-                if (measured > info_.latencyFrames) info_.latencyFrames = static_cast<int>(measured);
-            }
+        // Next frame we write vs now = buffer fill + hardware latency.
+        const int64_t aheadNs = anchor + FramesToNs(after, rtRate_) - HostTimeNs();
+        const int64_t measured = aheadNs * rtRate_ / 1000000000LL;
+        if (measured > 0 && measured < rtRate_) {
+            std::lock_guard<std::mutex> infoLock(infoMutex_);
+            info_.latencyFrames = std::max(rtBufferFrames_, static_cast<int>(measured));
         }
     }
 
@@ -398,9 +433,10 @@ private:
     bool started_ = false;
     bool quitPoller_ = false;
     bool anchorConfirmed_ = false;
-    bool haveDelta_ = false;
-    bool latencyMeasured_ = false;
+    bool havePending_ = false;
     int64_t pendingDelta_ = 0;
+    int64_t pendingAnchor_ = 0;
+    int64_t pendingPosition_ = 0;
     int64_t deltaTolerance_ = 0;
 
     // Read by the data callback; written only while no callback runs (open).
@@ -413,6 +449,7 @@ private:
     std::atomic<bool> threadNamed_{false};
     std::atomic<int64_t> framesRendered_{0};
     std::atomic<int64_t> anchorNs_{0}; // host time of rendered frame 0; 0 = unknown
+    std::atomic<int64_t> leadNs_{0};   // presentNs - now of the last timestamped callback
 
     mutable std::mutex infoMutex_;
     DeviceInfo info_{};

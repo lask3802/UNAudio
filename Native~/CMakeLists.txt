@@ -98,6 +98,11 @@ elseif(APPLE)
 elseif(ANDROID)
     # Oboe 1.9.3 declares cmake_minimum_required(3.4.1), which CMake 4 rejects.
     set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+    # Oboe defines its own null SL_IID_* constants unless told not to. Linked
+    # statically into an executable (tests, probe) they are exported and
+    # interpose libOpenSLES's real ones, which crashes the ARM translator
+    # (libndk_translation) at load. The shared plugin hides them either way.
+    set(OBOE_DO_NOT_DEFINE_OPENSL_ES_CONSTANTS ON CACHE BOOL "Use libOpenSLES's SL_IID constants" FORCE)
     if(UNAUDIO_OBOE_DIR)
         add_subdirectory(${UNAUDIO_OBOE_DIR} ${CMAKE_BINARY_DIR}/oboe)
     elseif(UNAUDIO_FETCH_OBOE)
@@ -187,9 +192,10 @@ if(UNAUDIO_BUILD_TESTS)
     endif()
 endif()
 
-# Developer tool: plays a test tone through the platform device.
+# Developer tool: plays a test tone through the platform device, or runs the
+# engine on it ("engine" mode, which needs the C API).
 if(UNAUDIO_BUILD_TESTS)
-    add_executable(una_device_probe Tests/device_probe.cpp)
+    add_executable(una_device_probe Tests/device_probe.cpp ${UNA_API_SOURCES})
     target_link_libraries(una_device_probe PRIVATE unaudio_core)
     # Mixer throughput benchmark (manual device).
     add_executable(una_bench Tests/bench_mixer.cpp ${UNA_API_SOURCES})
