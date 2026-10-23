@@ -60,11 +60,17 @@ namespace UNAudio
         /// <summary>Changes every time the engine is (re)initialised. Cached handles from an older session are dead.</summary>
         public static int Session => s_Session;
 
+        /// <summary>
+        /// Output format and the backend's current latency estimate, which some backends refine
+        /// once the stream reports real timestamps (Android, Apple).
+        /// </summary>
         public static UNAudioDeviceInfo Device
         {
             get
             {
                 EnsureInitialized();
+                una_device_info info;
+                if (UNAudioNative.una_get_device_info(&info) == 0) s_Device = new UNAudioDeviceInfo(info);
                 return s_Device;
             }
         }

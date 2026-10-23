@@ -66,6 +66,23 @@ TEST(Clock, DiscontinuityReanchors) {
     EXPECT_EQ(after.anchorFrame, 100 * 480);
 }
 
+TEST(Clock, TinyCallbacksKeepANominalPeriodOfTolerance) {
+    Clock clock;
+    clock.Reset(44100, 1764);  // legacy AAudio: 40 ms period
+    const double p = 1e9 / 44100.0;
+    const int64_t t = 1000000000;
+    int64_t frame = 0;
+    for (int cb = 0; cb < 50; ++cb, frame += 1764) clock.OnCallback(frame, 1764, t + int64_t(frame * p), t, 0);
+    const auto before = clock.Read();
+    // After a restart the stream delivers a few 2-frame callbacks whose timestamps are 12 ms
+    // off: jitter well inside a 40 ms period, not a discontinuity.
+    for (int cb = 0; cb < 4; ++cb, frame += 2) clock.OnCallback(frame, 2, t + int64_t(frame * p) + 12000000, t, 0);
+    EXPECT_EQ(clock.Read().discontinuities, before.discontinuities);
+    // A real jump still re-anchors.
+    clock.OnCallback(frame, 1764, t + int64_t(frame * p) + 200000000, t, 0);
+    EXPECT_EQ(clock.Read().discontinuities, before.discontinuities + 1);
+}
+
 TEST(Clock, AudibleNowIsMonotonicAndBoundedByMix) {
     Clock clock;
     clock.Reset(48000, 256);

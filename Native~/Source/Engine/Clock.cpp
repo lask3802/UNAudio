@@ -21,6 +21,7 @@ void Clock::Reset(int sampleRate, int bufferFrames, bool newSession) {
     settle_ = 0;
     sampleRate_ = sampleRate;
     bufferFrames_ = bufferFrames;
+    periodFrames_ = bufferFrames;
     nominalNsPerFrame_ = sampleRate > 0 ? 1e9 / sampleRate : 0.0;
     init_ = false;
     dllNsPerFrame_ = nominalNsPerFrame_;
@@ -51,7 +52,10 @@ void Clock::OnCallback(int64_t firstFrame, int frames, int64_t presentNs, int64_
     const double pred = dllNs_ + static_cast<double>(df) * dllNsPerFrame_;
     const double e = t - pred;
     const double periodNs = static_cast<double>(df) * nominalNsPerFrame_;
-    const double tolerance = std::max(8e6, 3.0 * periodNs);
+    // A few tiny callbacks (legacy AAudio sends 2-frame ones after a start) carry as much
+    // timestamp jitter as full ones, so the tolerance never drops below a nominal period's.
+    const double tolerance =
+        std::max(8e6, 3.0 * static_cast<double>(std::max<int64_t>(df, periodFrames_)) * nominalNsPerFrame_);
 
     if (std::fabs(e) > tolerance) {
         // Device restart, xrun or a jump in reported latency: re-anchor.

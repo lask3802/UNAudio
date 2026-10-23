@@ -65,7 +65,8 @@ private:
     int64_t discontinuities_ = 0;
     int64_t generation_ = 0;       // bumped by every Reset; never rewinds
     int32_t sampleRate_ = 0;
-    int32_t bufferFrames_ = 0;
+    int32_t bufferFrames_ = 0;     // last callback's size
+    int32_t periodFrames_ = 0;     // nominal device period from Reset
 
     // Published (seqlock)
     std::atomic<uint32_t> seq_{0};

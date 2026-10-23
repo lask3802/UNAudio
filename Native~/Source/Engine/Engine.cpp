@@ -263,13 +263,19 @@ void Engine::Shutdown() {
 }
 
 int Engine::GetDeviceInfo(una_device_info& out) {
-    std::lock_guard<std::mutex> lock(devMutex_);
+    // mutex_ keeps device_ alive: Shutdown clears initialized_ and resets device_ under it.
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!initialized_.load(std::memory_order_acquire)) return UNA_E_NOT_INITIALIZED;
+    // Backends refine their latency once the stream reports timestamps (AAudio, CoreAudio), so
+    // the copy from Init or the last device change goes stale. Read it before taking devMutex_:
+    // a device thread may hold its own info lock while it reports a change.
+    const int latency = device_ ? device_->Info().latencyFrames : -1;
+    std::lock_guard<std::mutex> dl(devMutex_);
     std::memset(&out, 0, sizeof(out));
     out.sample_rate = devInfo_.sampleRate;
     out.channels = devInfo_.channels;
     out.buffer_frames = devInfo_.bufferFrames;
-    out.latency_frames = devInfo_.latencyFrames;
+    out.latency_frames = latency >= 0 ? latency : devInfo_.latencyFrames;
     out.exclusive = devInfo_.exclusive ? 1 : 0;
     out.backend = devInfo_.backend;
     return UNA_OK;
