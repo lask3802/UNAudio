@@ -24,6 +24,7 @@
 | `UNAudioStats GetStats()` | callbacks、starved / dropped / late、active voices、CPU load、peak、clip 記憶體 |
 | `Render(float[] buffer, int frames)` | 只用於 `Manual` 裝置 |
 | 事件 `VoiceStarted / VoiceEnded / VoiceLooped(voice, dspFrame)`、`VoiceStarved(voice, frames)`、`DeviceChanged(sampleRate)`、`ShutdownCompleted` | |
+| 事件 `VoiceError(voice, UNAudioResult)` | 串流 voice 解碼失敗（開檔失敗 `UnsupportedFormat`、seek 或解碼失敗 `DecodeError`、記憶體不足 `OutOfMemory`）；之後一定接著同一個 dsp frame 的 `VoiceEnded` |
 
 ## UNAudioConfig
 
@@ -74,6 +75,7 @@
 | 成員 | 說明 |
 |---|---|
 | `State`、`IsValid`、`IsAlive`、`IsPlaying` | voice 被回收後狀態是 `Invalid` |
+| `UNAudioResult Error` | voice 因錯誤提前結束時的原因，否則 `Ok`。在 `VoiceError` 事件分派時記錄（主執行緒），保留到引擎 `Shutdown` |
 | `double Time`、`double Frame` | 此刻被聽到的 clip 時間 / frame |
 | `UNAudioVoiceTiming GetTiming(long hostNs = 0)` | 指定 host 時間的完整時間資訊 |
 | `Stop(fade, atDsp)`、`Pause(atDsp)`、`Resume(atDsp)` | |
@@ -101,15 +103,21 @@
 
 ## UNAudioAsset（ScriptableObject）
 
-由 importer 產生。`Data`（原始檔案的 TextAsset）、`LoadOptions`、`Channels`、`SampleRate`、`Frames`、`Length`、`Format`；`Load(options)` 建立獨立 clip；`Clip` 共用 clip；`LoadAsync()`；`Play()`；`Unload()`。
+由 importer 產生。`Data`（原始檔案的 TextAsset）、`LoadOptions`、`Channels`、`SampleRate`、`Frames`、`Length`、`Format`；`Load(options)` 建立獨立 clip；`Clip` 共用 clip；`IsClipLoaded`；`LoadAsync()`；`Play()`；`Unload()`。
+
+`PreloadAudioData`（importer 的 **Preload Audio Data** 選項，預設關閉）對應 AudioClip 的同名設定：資產在執行中的遊戲裡被載入（場景參照、Resources、AssetBundle）後的下一幀，共用的 `Clip` 就開始 native 解碼，而不是等到第一次使用。Editor 裡已經在記憶體中的資產在進入 Play Mode 時開始。資產卸載時 clip 一起釋放。
 
 ## UNAudioAssetBundles（static）
 
-`Task<UNAudioClip> LoadClipAsync(AssetBundle, name, options)`：非同步載入資產（UNAudioAsset 或 TextAsset）並等到 clip 可以播放。`LoadClip(...)` 為同步載入資產、背景解碼的版本。
+| 成員 | 說明 |
+|---|---|
+| `Task<UNAudioClip> LoadClipAsync(AssetBundle, name, options)` | 非同步載入資產（UNAudioAsset 或 TextAsset）並等到 clip 可以播放 |
+| `UNAudioClip LoadClip(...)` | 同步載入資產、背景解碼 |
+| `Task<UNAudioAsset[]> PreloadAsync(AssetBundle)` | 載入 bundle 裡所有 UNAudioAsset 並啟動它們的共用 clip，全部可以播放時完成；之後 `asset.Play()` 直接使用。某個 clip 失敗時 task fault，其他的仍保持載入 |
 
 ## UNAudioPlayer（MonoBehaviour）
 
-場景裡擺放用的簡單元件：asset、play on enable、loop、volume、pan、pitch、bus、停用時淡出。
+場景裡擺放用的簡單元件：asset、play on enable、loop、volume、pan、pitch、bus、停用時淡出。clip 載入失敗或串流解碼失敗時記錄錯誤、設定 `LastError` 並觸發 `Error(player, UNAudioResult)` 事件。
 
 ## Editor
 
@@ -122,3 +130,5 @@
 `Native~/Include/unaudio.h`，前綴 `una_`，`UNA_API_VERSION 2`。所有 struct 都有 `struct_size` 欄位做 ABI 檢查。C# 層是它的薄包裝，其他引擎或工具也可以直接使用。
 
 帶時間的命令超過 8192 筆待執行時，API 回 `UNA_E_QUEUE_FULL`，不會被提早套用。串流 clip 搭配 `UNA_CLIP_FLAG_BORROW` 時，借用的記憶體要保留到 `UNA_EVENT_CLIP_FREED`。
+
+串流 voice 的 decoder 打不開或 seek 失敗時，先發 `UNA_EVENT_VOICE_ERROR`（`value` 是 `una_result`：`UNA_E_FORMAT`、`UNA_E_DECODE`、`UNA_E_OUT_OF_MEMORY`），再在同一個 dsp frame 發 `UNA_EVENT_VOICE_ENDED`。失敗前已經解出的資料會先播完。

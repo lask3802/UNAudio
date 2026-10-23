@@ -358,6 +358,9 @@ namespace UNAudio
 #endif
         }
 
+        /// <summary>Only the per-frame tick (no shutdown hooks, no pause handler): safe from OnEnable.</summary>
+        internal static void EnsureUpdateHook() => InsertIntoPlayerLoop();
+
         static void InsertIntoPlayerLoop()
         {
             var root = PlayerLoop.GetCurrentPlayerLoop();

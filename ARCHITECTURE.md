@@ -58,6 +58,21 @@ Audio thread 每個 callback 都設定 flush-to-zero（SSE FTZ/DAZ、ARM FZ）�
 
 測試（`test_engine.cpp`）用「每個樣本編碼自己的索引」的 ramp 訊號，驗證開始、結束、loop、pause、seek 落在確切的 frame，而且在 64 到 2048 的各種 block 大小下結果相同。
 
+### SIMD
+
+要防止的問題：混音成本隨 voice 數線性成長，而編譯器不會自動向量化這幾個迴圈：交錯的立體聲寫入、逐 frame 不同位置的 cubic 內插，以及 FIR 的浮點累加（沒有 fast-math 時不允許重排加法順序）。
+
+做法：`Core/Simd.h` 在 x86/x64 選 SSE2（x64 的基本指令集，不需要執行期偵測），在 ARM 選 NEON（AArch64 一定有，NDK 對 armeabi-v7a 預設開啟）。`Engine/MixKernels.cpp` 把五個熱迴圈寫成 4-lane 版本：
+
+- 1:1 mono / stereo：一次 4 frame；gain ramp 用 `l0 + dl × i` 逐 lane 算，和純量版同一個式子。
+- Cubic 內插：位置不規則，所以 4 個 tap 用純量讀進來，多項式用 SIMD 算；stereo 版一個向量放兩個 frame 的 L/R。內插權重取 32.32 位置的 24 位小數，轉成 float 是精確的，所以純量和 SIMD 用的是同一個權重。
+- int16 → float、master（gain、clip、peak）。
+- 解碼端 resampler 的內積（`simd::Dot`），兩組累加器。
+
+每個 kernel 在 `mix::scalar` 裡都有純量參考版，`test_simd.cpp` 用各種長度（含 0、奇數、非 4 倍數）和中途結束的 ramp 比對兩者；`-DUNAUDIO_SIMD=OFF` 會整個退回純量版，同一套測試也要通過。x64 上 64 voices 的實測：1:1 快約 1.8 倍，cubic 與即時重取樣快約 2.2 倍，解碼時的重取樣快約 1.7 倍。
+
+沒有涵蓋：沒有 AVX 路徑（要執行期偵測，而目前的瓶頸已經不在算術）；cubic 的 tap 讀取仍是純量。ARM 上編譯器可能把純量式子合併成 FMA，兩條路徑在最後一個 bit 可能不同，所以比對測試留了 2e-6 的容差。
+
 ## 5. 時鐘：「現在喇叭在播哪一個樣本」
 
 要防止的問題：mixer 寫到哪裡（mix head）不等於玩家聽到哪裡，中間隔著整個輸出延遲；而 callback 的時間點有排程抖動，直接拿來用，時間會一格一格跳。
@@ -88,6 +103,7 @@ Audio thread 每個 callback 都設定 flush-to-zero（SSE FTZ/DAZ、ARM FZ）�
 - **Clip 參考**：每個 Stream 自己持有一個 clip 參考，最後一個 `shared_ptr` 消失時才放掉。stream thread 在 `Refill` 時可能握著最後一個參考，光靠 voice slot 的參考不足以保證 `clip->src` 還活著。所以串流 clip 的 `CLIP_FREED` 可能比 voice 回收晚一次 `una_update`，借用的記憶體要等到 `CLIP_FREED` 才能釋放。
 - **Seek**：控制端提高 epoch；producer 看到新 epoch 就丟棄舊 block、從新位置開始填。每個 block 帶 `streamPos`，mixer 用它對齊，遲到的資料直接跳過，所以 seek 後時間軸不會偏移。
 - **開始**：立即播放的 voice 會等 ring 有資料（primed）才開始；排程播放則準時開始，資料不足的部分播靜音並發 `VOICE_STARVED`。
+- **失敗**：clip 載入時已經 probe 過，所以 voice 自己的 decoder 開不起來，只會是借用的位元組被改掉，或記憶體不足；seek 失敗則是資料損毀（stb_vorbis seek 失敗時會回到開頭，繼續播會讓聲音和時間軸錯開）。兩種情況下 producer 都停止，並記錄 `una_result`。mixer 先把失敗前已經解出的資料播完，再發 `VOICE_ERROR`（帶錯誤碼），然後在同一個 frame 發 `VOICE_ENDED`。等待資料的立即播放 voice 在失敗時不會先發 `VOICE_STARTED`：mixer 先問 `Primed()` 再問 `Failed()`，因為失敗也會讓 `Primed()` 成立，而 `failed_` 只會從 false 變成 true。
 
 ## 8. 生命週期
 
@@ -106,6 +122,7 @@ Audio thread 每個 callback 都設定 flush-to-zero（SSE FTZ/DAZ、ARM FZ）�
 - Domain reload、離開 Play Mode、`Application.quitting` 時關閉 native engine；`UNAudioEngine.Session` 讓快取的 clip 與 voice 知道自己屬於舊 session，舊 voice 的所有控制都變成 no-op。
 - 載入 clip 與初始化只能在主執行緒呼叫（clip 登記表與 PlayerLoop 都不是 thread-safe，違反時直接丟例外）；voice 控制與時間查詢可以在任何執行緒呼叫。
 - `Task` 一律以 `RunContinuationsAsynchronously` 建立，continuation 不會在事件分派或 `Shutdown` 的迴圈中途執行。
+- `UNAudioAsset.PreloadAudioData`：資產的 `OnEnable` 只把自己登記到 `UNAudioPreloader`，因為 `OnEnable` 發生在資產還在整合的時候（例如非同步載入 AssetBundle），這時去讀同一個資產裡的 TextAsset 會觸發同步載入。真正開始載入在下一個 PlayerLoop tick（Play Mode 的主執行緒）；登記時會確保 PlayerLoop 已插入 UNAudio 的 tick，即使引擎還沒初始化（preload 本身會初始化它）。Edit mode 與進入 Play Mode 前的 domain reload 期間登記的資產，在 `BeforeSceneLoad` 開始。`OnDisable`（資產卸載）會取消登記並釋放 clip。
 - 隱藏的 `UNAudioPauseHandler` 接收 `OnApplicationPause`，在 `SuspendWhenPaused` 為 true（預設）時暫停輸出。不用 `Application.focusChanged`，因為桌面版切換視窗也會觸發，而設定了 `runInBackground` 的遊戲不該因此停止聲音。
 - `UNAudioClip.Load(TextAsset)` 用 `GetData<byte>()` 取得原生記憶體指標，整條路徑沒有 managed 配置（EditMode 測試量測 `GC.GetAllocatedBytesForCurrentThread` 驗證）。
 

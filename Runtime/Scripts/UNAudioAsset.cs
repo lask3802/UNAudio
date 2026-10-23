@@ -29,8 +29,9 @@ namespace UNAudio
         public UNAudioLoadOptions LoadOptions => m_LoadOptions;
         /// <summary>
         /// Like <see cref="AudioClip.preloadAudioData"/>: the shared <see cref="Clip"/> starts loading
-        /// as soon as this asset is loaded in a running game (scene reference, Resources, AssetBundle),
-        /// instead of on first use. In the editor, assets already in memory start when play mode begins.
+        /// on the frame after this asset is loaded in a running game (scene reference, Resources,
+        /// AssetBundle), instead of on first use. In the editor, assets already in memory start when
+        /// play mode begins.
         /// </summary>
         public bool PreloadAudioData => m_PreloadAudioData;
         public int Channels => m_Channels;
@@ -119,9 +120,10 @@ namespace UNAudio
     }
 
     /// <summary>
-    /// Starts the shared clips of <see cref="UNAudioAsset.PreloadAudioData"/> assets. Loading must
-    /// happen on the main thread in play mode, so assets enabled elsewhere (edit mode, the domain
-    /// reload before play mode) wait here until play mode starts.
+    /// Starts the shared clips of <see cref="UNAudioAsset.PreloadAudioData"/> assets on the next
+    /// PlayerLoop tick (main thread, play mode). <c>OnEnable</c> runs while the asset is still being
+    /// integrated (e.g. an async AssetBundle load), so it only registers; assets enabled outside play
+    /// mode (edit mode, the domain reload before play mode) wait until play mode starts.
     /// </summary>
     static class UNAudioPreloader
     {
@@ -138,7 +140,8 @@ namespace UNAudio
                 s_Waiting.Add(asset);
                 s_HasWaiting = true;
             }
-            if (UNAudioEngine.IsMainThread && Application.isPlaying) Flush();
+            // The tick runs even before the engine is initialised (the preload initialises it).
+            if (UNAudioEngine.IsMainThread && Application.isPlaying) UNAudioPlayerLoop.EnsureUpdateHook();
         }
 
         internal static void Remove(UNAudioAsset asset)
