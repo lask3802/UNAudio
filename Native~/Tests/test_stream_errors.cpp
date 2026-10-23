@@ -2,11 +2,14 @@
 // Failures are provoked by changing borrowed bytes after the clip was probed.
 
 #include "TestUtil.h"
+#include "Decode/DecodePipeline.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
 #include <thread>
 
 using namespace test;
@@ -145,6 +148,80 @@ TEST(StreamErrors, FailureAfterDataEndsRightAfterTheLastDecodedFrame) {
     EXPECT_EQ(o.endDsp, kStart + kRing);
     EXPECT_FALSE(o.looped) << "the wrap never happened";
     EXPECT_FALSE(o.starved) << "running out of data after a failure is the end, not starvation";
+    una_clip_release(c);
+    una_update();
+}
+
+// A stream fails when its source ends before the length its header promised, so every
+// valid file must deliver exactly that length, at the source rate and resampled.
+TEST(StreamErrors, EveryFixtureDeliversItsDeclaredLength) {
+    const char* files[] = {"sine_48k_stereo_100ms.ogg", "tone_44k_mono_2s.ogg", "tone_48k_51_1s.ogg",
+                           "tone_48k_stereo_3s.ogg",   "flac_32k_mono_32.flac", "flac_44k_mono_24.flac",
+                           "flac_48k_51.flac",          "flac_48k_stereo_16.flac", "mp3_22k_mono.mp3",
+                           "mp3_44k_noxing.mp3",        "mp3_44k_stereo_cbr.mp3",  "mp3_44k_stereo_vbr.mp3",
+                           "mp3_48k_id3.mp3"};
+    std::vector<float> l(4096), r(4096);
+    float* out[2] = {l.data(), r.data()};
+    for (const char* name : files) {
+        const auto bytes = ReadFixture(name);
+        ASSERT_FALSE(bytes.empty()) << name;
+        for (int rate : {0, 48000, 44100}) {
+            una::DecodePipeline pipe;
+            ASSERT_EQ(pipe.Open(bytes.data(), bytes.size(), rate), UNA_OK) << name;
+            int64_t n = 0;
+            for (int got; (got = pipe.Read(out, 4096)) > 0;) n += got;
+            EXPECT_EQ(n, pipe.TotalFrames()) << name << " @" << rate;
+            EXPECT_FALSE(pipe.SourceEndedEarly()) << name << " @" << rate;
+            // Seeking into the last second and reading to the end must not trip it either.
+            ASSERT_TRUE(pipe.Seek(std::max<int64_t>(0, pipe.TotalFrames() - pipe.StoredRate())));
+            while (pipe.Read(out, 4096) > 0) {}
+            EXPECT_FALSE(pipe.SourceEndedEarly()) << name << " @" << rate << " after seek";
+        }
+    }
+}
+
+TEST(StreamErrors, CorruptDataMidStreamEndsAfterTheLastDecodedFrame) {
+    ManualEngine e;
+    ASSERT_TRUE(e.ok());
+    std::vector<uint8_t> bytes = ReadFixture("tone_48k_stereo_3s.ogg");
+    una_clip c = LoadClip(bytes, UNA_LOAD_STREAM, UNA_SAMPLE_FLOAT32, UNA_CLIP_FLAG_BORROW);
+    ASSERT_EQ(WaitClip(c, UNA_CLIP_LOADED), UNA_CLIP_LOADED);
+    una_clip_info info{};
+    ASSERT_EQ(una_clip_get_info(c, &info), UNA_OK);
+
+    // Let the voice's decoder open (it reads the length from the last page) and fill the ring,
+    // then wipe everything past the first third of the file.
+    una_play_params p = DefaultPlay();
+    p.start_dsp_frame = 256;
+    una_voice v = 0;
+    ASSERT_EQ(una_voice_play(c, &p, &v), UNA_OK);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    una_stats st{};
+    una_get_stats(&st);  // orders the producer's last reads before the writes below
+    std::fill(bytes.begin() + static_cast<std::ptrdiff_t>(bytes.size() / 3), bytes.end(), uint8_t(0));
+
+    std::vector<float> out;
+    Outcome o;
+    for (int i = 0; i < 1000 && !o.ended; ++i) {
+        e.Render(256, &out);
+        Collect(o, v);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    ASSERT_TRUE(o.ended);
+    EXPECT_TRUE(o.error);
+    EXPECT_EQ(o.errorValue, UNA_E_DECODE);
+    EXPECT_EQ(o.errorDsp, o.endDsp);
+    EXPECT_FALSE(o.starved);
+    EXPECT_LT(o.endDsp - 256, info.total_frames - 48000) << "ends at the damage, not after silence to the end";
+    // Intact audio plays on past the ring's first fill; stb_vorbis may turn the rest of the
+    // damaged page into silence before it notices, so the end follows within a page or so.
+    ASSERT_GE(out.size(), static_cast<size_t>(o.endDsp) * 2);
+    int64_t lastLoud = -1;
+    for (int64_t f = 0; f < o.endDsp; ++f)
+        if (std::fabs(out[static_cast<size_t>(f) * 2]) > 1e-4f) lastLoud = f;
+    EXPECT_GT(lastLoud - 256, 16 * 1024);
+    EXPECT_LT(o.endDsp - lastLoud, 24000);
     una_clip_release(c);
     una_update();
 }

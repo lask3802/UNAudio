@@ -24,7 +24,7 @@
 | `UNAudioStats GetStats()` | callbacks、starved / dropped / late、active voices、CPU load、peak、clip 記憶體 |
 | `Render(float[] buffer, int frames)` | 只用於 `Manual` 裝置 |
 | 事件 `VoiceStarted / VoiceEnded / VoiceLooped(voice, dspFrame)`、`VoiceStarved(voice, frames)`、`DeviceChanged(sampleRate)`、`ShutdownCompleted` | |
-| 事件 `VoiceError(voice, UNAudioResult)` | 串流 voice 解碼失敗（開檔失敗 `UnsupportedFormat`、seek 或解碼失敗 `DecodeError`、記憶體不足 `OutOfMemory`）；之後一定接著同一個 dsp frame 的 `VoiceEnded` |
+| 事件 `VoiceError(voice, UNAudioResult)` | 串流 voice 解碼失敗（開檔失敗 `UnsupportedFormat`；seek 失敗或資料截斷、損毀 `DecodeError`；記憶體不足 `OutOfMemory`）；已解出的資料播完後發出，之後一定接著同一個 dsp frame 的 `VoiceEnded` |
 
 ## UNAudioConfig
 
@@ -131,4 +131,4 @@
 
 帶時間的命令超過 8192 筆待執行時，API 回 `UNA_E_QUEUE_FULL`，不會被提早套用。串流 clip 搭配 `UNA_CLIP_FLAG_BORROW` 時，借用的記憶體要保留到 `UNA_EVENT_CLIP_FREED`。
 
-串流 voice 的 decoder 打不開或 seek 失敗時，先發 `UNA_EVENT_VOICE_ERROR`（`value` 是 `una_result`：`UNA_E_FORMAT`、`UNA_E_DECODE`、`UNA_E_OUT_OF_MEMORY`），再在同一個 dsp frame 發 `UNA_EVENT_VOICE_ENDED`。失敗前已經解出的資料會先播完。
+串流 voice 的 decoder 打不開、seek 失敗，或資料在檔頭宣告的長度之前就斷掉（截斷、損毀）時，先發 `UNA_EVENT_VOICE_ERROR`（`value` 是 `una_result`：`UNA_E_FORMAT`、`UNA_E_DECODE`、`UNA_E_OUT_OF_MEMORY`），再在同一個 dsp frame 發 `UNA_EVENT_VOICE_ENDED`。失敗前已經解出的資料會先播完，結束點就在最後一個解出的 frame 之後，不會出現 `STARVED`，也不會有沒發生的 `LOOPED`。decoder 偵測損毀的粒度是它自己的封包（Vorbis 是一個 page），所以損毀處之前可能先播出一小段 decoder 解出的靜音。Decode 模式的 clip 遇到同樣的資料會補靜音，clip 仍然是 `Loaded`。

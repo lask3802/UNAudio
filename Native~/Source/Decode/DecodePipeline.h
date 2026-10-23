@@ -31,6 +31,12 @@ public:
 
     bool Seek(int64_t storedFrame);
 
+    /// The source delivered fewer frames than its header promised (truncated or corrupt
+    /// data); Read pads the rest with silence. Cleared by Seek.
+    bool SourceEndedEarly() const { return srcShort_; }
+    /// Stored frame where the decoded data ends (meaningful while SourceEndedEarly()).
+    int64_t SourceEndFrame() const { return resample_ ? rs_.OutputLength(srcPos_) : srcPos_; }
+
 private:
     int ReadSource(float* const* out, int frames);   // decode + downmix
     void Downmix(int frames, float* const* out);
@@ -43,6 +49,8 @@ private:
     int64_t total_ = 0;
     int64_t pos_ = 0;
     bool srcEnd_ = false;
+    int64_t srcPos_ = 0;     // source frame the decoder reads next
+    bool srcShort_ = false;
 
     bool resample_ = false;
     Resampler rs_;

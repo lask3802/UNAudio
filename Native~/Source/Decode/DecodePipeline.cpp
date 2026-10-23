@@ -71,6 +71,8 @@ int DecodePipeline::Open(const uint8_t* data, size_t size, int targetRate) {
     }
     pos_ = 0;
     srcEnd_ = false;
+    srcPos_ = 0;
+    srcShort_ = false;
     return total_ > 0 ? UNA_OK : UNA_E_FORMAT;
 }
 
@@ -98,7 +100,12 @@ int DecodePipeline::ReadSource(float* const* out, int frames) {
     float* raw[kMaxSourceChannels];
     for (int c = 0; c < srcFmt_.channels; ++c) raw[c] = raw_[c].data();
     const int n = dec_->Read(raw, frames);
-    if (n > 0) Downmix(n, out);
+    if (n > 0) {
+        Downmix(n, out);
+        srcPos_ += n;
+    } else if (srcPos_ < srcFmt_.totalFrames) {
+        srcShort_ = true;
+    }
     return n;
 }
 
@@ -151,16 +158,20 @@ int DecodePipeline::Read(float* const* out, int frames) {
 bool DecodePipeline::Seek(int64_t storedFrame) {
     storedFrame = std::max<int64_t>(0, std::min(storedFrame, total_));
     srcEnd_ = false;
+    srcShort_ = false;
     if (!resample_) {
         if (!dec_->Seek(storedFrame)) return false;
-        pos_ = storedFrame;
+        pos_ = srcPos_ = storedFrame;
         return true;
     }
     const int64_t firstInput = rs_.Reset(storedFrame);
     if (firstInput >= srcFmt_.totalFrames) {
         srcEnd_ = true;
+        srcPos_ = srcFmt_.totalFrames;
     } else if (!dec_->Seek(firstInput)) {
         return false;
+    } else {
+        srcPos_ = firstInput;
     }
     pos_ = storedFrame;
     return true;

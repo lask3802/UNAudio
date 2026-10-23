@@ -75,9 +75,16 @@ bool Stream::Refill() {
 
         const int n = static_cast<int>(std::min<int64_t>(kBlockFrames, end - prodPos_));
         float* pl[2] = {planar_[0], planar_[1]};
-        const int got = pipe_.Read(pl, n);
+        int got = pipe_.Read(pl, n);
+        bool truncated = false;
+        if (pipe_.SourceEndedEarly() && prodPos_ + got >= pipe_.SourceEndFrame()) {
+            // Truncated or corrupt data: keep what decoded, drop the silence padding, then fail.
+            got = static_cast<int>(std::max<int64_t>(0, pipe_.SourceEndFrame() - prodPos_));
+            truncated = true;
+        }
         if (got <= 0) {
             prodEnd_ = true;
+            if (truncated) Fail(UNA_E_DECODE);
             break;
         }
 
@@ -99,6 +106,11 @@ bool Stream::Refill() {
         head_.store(head + 1, std::memory_order_release);
         produced = true;
         primedEpoch_.store(prodEpoch_, std::memory_order_release);
+        if (truncated) {
+            prodEnd_ = true;
+            Fail(UNA_E_DECODE);  // after the last head_ store: Failed() then sees every frame
+            break;
+        }
     }
     if (prodEnd_) {
         endEpoch_.store(prodEpoch_, std::memory_order_release);
