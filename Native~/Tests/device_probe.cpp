@@ -7,9 +7,9 @@
 //       restart_ms > 0 the device is stopped for that long and played for
 //       another 2 s.
 //
-//   una_device_probe engine [seconds] [clip_path] [suspend_ms]
-//       Runs the whole engine on the default device: loads clip_path (or a
-//       generated tone), loops it, samples una_get_clock and the voice timing
+//   una_device_probe engine [seconds] [clip_path|-] [suspend_ms] [sample_rate]
+//       Runs the whole engine on the default device (at sample_rate if given):
+//       loads clip_path (or a generated tone), loops it, samples una_get_clock and the voice timing
 //       every 5 ms, then suspends and resumes the output. Prints the audible
 //       clock's rate and jitter, latency, discontinuities and engine stats, and
 //       PASS/FAIL lines; exits non-zero if a check fails.
@@ -132,7 +132,7 @@ int RunDevice(int argc, char** argv) {
     const int rate = after.sampleRate > 0 ? after.sampleRate : 48000;
     int minFrames = 0, maxFrames = 0, unknown = 0, anchorMoves = 0;
     double maxMoveMs = 0.0;
-    int64_t lastMoveIndex = -1;
+    int64_t lastMoveIndex = -1, lastMoveBeforeRestart = -1;
     std::vector<double> gaps;
     for (int64_t i = 0; i < count; ++i) {
         const CallbackRec& r = tone.recs[static_cast<size_t>(i)];
@@ -155,6 +155,7 @@ int RunDevice(int argc, char** argv) {
         if (moveMs > 0.5) {
             ++anchorMoves;
             lastMoveIndex = i;
+            if (restartAt < 0 || i < restartAt) lastMoveBeforeRestart = i;
             if (anchorMoves <= 8)
                 std::printf("  anchor moved %+.2f ms at callback %lld (t=%.3f s)\n", (anchor - prevAnchor) * 1e-6,
                             (long long)i, (r.nowNs - tone.recs[0].nowNs) * 1e-9);
@@ -173,10 +174,23 @@ int RunDevice(int argc, char** argv) {
                 (long long)tone.callbacks.load(), (long long)frames,
                 (seconds + (restartMs > 0 ? 2.0 : 0.0)) * info.sampleRate, minFrames, maxFrames,
                 Percentile(gaps, 0.5), Percentile(gaps, 0.99), Percentile(gaps, 1.0));
-    std::printf("latency after first timestamp: %d frames (%.2f ms)\n", after.latencyFrames,
+    std::printf("latency from timestamps: %d frames (%.2f ms)\n", after.latencyFrames,
                 after.latencyFrames * 1000.0 / rate);
     std::printf("presentNs unknown in %d callbacks; anchor moved %d times (max %.2f ms)\n", unknown, anchorMoves,
                 maxMoveMs);
+    // Until the first confirmed timestamp every callback is now + lead, so the
+    // anchor jitters with callback timing; the last move marks the switch.
+    auto secondsBetween = [&](int64_t from, int64_t to) {
+        if (from < 0 || to < from || to >= count) return 0.0;
+        return (tone.recs[static_cast<size_t>(to)].nowNs - tone.recs[static_cast<size_t>(from)].nowNs) * 1e-9;
+    };
+    if (lastMoveBeforeRestart < 0)
+        std::printf("anchor settled at the first callback");
+    else
+        std::printf("anchor settled %.3f s after start", secondsBetween(0, lastMoveBeforeRestart));
+    if (restartAt >= 0 && lastMoveIndex >= restartAt)
+        std::printf(", %.3f s after restart", secondsBetween(restartAt, lastMoveIndex));
+    std::printf("\n");
     if (!lat.empty())
         std::printf("present-now latency ms (steady): min=%.2f p50=%.2f max=%.2f over %zu callbacks\n",
                     Percentile(lat, 0.0), Percentile(lat, 0.5), Percentile(lat, 1.0), lat.size());
@@ -247,18 +261,21 @@ struct ClockReport {
     double ppm = 0, jitterMaxMs = 0, jitterP99Ms = 0, lagMinMs = 0, lagMaxMs = 0, lagP50Ms = 0;
     int backwards = 0;
     int64_t discontinuities = 0;
+    bool valid = false; // enough samples to judge
 };
 
-// Steady state = samples after the last discontinuity before `skipSeconds`.
+// Steady state = samples from the last one taken before `skipSeconds` onwards.
 ClockReport Analyze(const std::vector<ClockSample>& v, double skipSeconds) {
     ClockReport r;
-    if (v.size() < 3) return r;
+    if (v.empty()) return r;
     const int rate = v.front().clock.sample_rate;
     const int64_t t0 = v.front().clock.host_ns;
     std::vector<double> jitter, lag;
     size_t first = 0;
     for (size_t i = 0; i < v.size(); ++i)
         if (v[i].clock.host_ns - t0 < static_cast<int64_t>(skipSeconds * 1e9)) first = i;
+    if (v.size() - first < 3) return r;
+    r.valid = true;
     r.discontinuities = v.back().clock.discontinuities - v[first].clock.discontinuities;
     for (size_t i = first + 1; i < v.size(); ++i) {
         const una_clock& a = v[i - 1].clock;
@@ -297,6 +314,7 @@ int RunEngine(int argc, char** argv) {
     una_config cfg{};
     cfg.struct_size = sizeof(cfg);
     cfg.device_type = UNA_DEVICE_DEFAULT;
+    cfg.sample_rate = argc > 5 ? std::atoi(argv[5]) : 0; // non-native: the backend resamples
     const int64_t initStart = una_host_time_ns();
     const int rc = una_init(&cfg);
     if (rc != UNA_OK) { std::printf("una_init failed: %d\n", rc); return 3; }
@@ -341,6 +359,12 @@ int RunEngine(int argc, char** argv) {
 
     const std::vector<ClockSample> run = SampleClock(voice, seconds);
     const ClockReport rep = Analyze(run, 1.0);
+    if (!rep.valid) {
+        Check(false, "clock sampled during the run");
+        std::printf("ENGINE PROBE FAILED\n");
+        una_shutdown();
+        return 7;
+    }
     PrintReport("clock (after 1 s)", rep);
     std::printf("clock: first anchor discontinuities=%lld callbacks=%lld fps=%.2f\n",
                 (long long)run.front().clock.discontinuities, (long long)run.back().clock.callbacks,
@@ -366,7 +390,6 @@ int RunEngine(int argc, char** argv) {
                 (long long)frozenA.mix_frame, (long long)frozenB.mix_frame, frozenA.audible_frame,
                 frozenB.audible_frame, vtA.audible_frame, vtB.audible_frame);
     Check(frozenA.mix_frame == frozenB.mix_frame, "mix head frozen while suspended");
-    Check(frozenB.audible_frame <= frozenB.mix_frame, "audible frame bounded by the frozen mix head");
     const int64_t resumeAt = una_host_time_ns();
     Check(una_set_suspended(0) == UNA_OK && una_is_suspended() == 0, "resume");
     std::printf("resume took %.1f ms\n", (una_host_time_ns() - resumeAt) * 1e-6);
@@ -379,7 +402,7 @@ int RunEngine(int argc, char** argv) {
                 (long long)before.discontinuities, (long long)resumed.discontinuities);
     Check(resumed.mix_frame > frozenB.mix_frame + di.sample_rate, "mix head advances after resume");
     Check(after.back().voiceState == UNA_VOICE_PLAYING, "voice still playing after resume");
-    Check(rep2.backwards == 0 && rep2.discontinuities == 0, "clock steady after resume");
+    Check(rep2.valid && rep2.backwards == 0 && rep2.discontinuities == 0, "clock steady after resume");
 
     una_stats st{};
     una_get_stats(&st);

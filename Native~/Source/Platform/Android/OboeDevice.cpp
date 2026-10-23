@@ -52,8 +52,14 @@ constexpr auto kReopenRetryFast = std::chrono::milliseconds(200); // first attem
 constexpr auto kReopenRetrySlow = std::chrono::milliseconds(1000);
 constexpr int kReopenFastAttempts = 10;
 constexpr int64_t kMaxPlausibleLatencyNs = 1000000000LL; // beyond this the anchor is stale
-// Two polls agree on an anchor; below the clock's 8 ms re-anchor threshold.
+// Two polls agree on an anchor (plus one burst on resampled streams); well
+// inside the clock's re-anchor threshold of max(8 ms, 3 periods).
 constexpr int64_t kAnchorToleranceNs = 4000000;
+// Before jittery anchors are accepted (see PollTimestamp_l): this many live polls
+// without two agreeing, and this long since the position first moved, which
+// outlasts the legacy path's extrapolated start-up positions.
+constexpr int kMaxAnchorMisses = 50;
+constexpr int64_t kMinUnconfirmedDelayNs = 2000000000LL;
 constexpr auto kPollFast = std::chrono::milliseconds(5);  // until the first anchor
 constexpr auto kPollSteady = std::chrono::milliseconds(100);
 
@@ -308,8 +314,10 @@ private:
         rtRate_ = rate;
         rtChannels_ = stream_->getChannelCount();
         rtBufferFrames_ = toAppFrames(bufferFrames > 0 ? bufferFrames : target);
-        // Resampled streams advance their counters in uneven steps.
-        deltaTolerance_ = rate != nativeRate ? toAppFrames(burst) : 0;
+        // Resampled streams advance their counters in uneven steps: our callbacks
+        // come in blocks of `burst` app frames, the written count in one native
+        // burst converted to app frames. Either can be the larger.
+        deltaTolerance_ = rate != nativeRate ? std::max(burst, toAppFrames(burst)) : 0;
         framesRendered_.store(0, std::memory_order_relaxed);
         threadNamed_.store(false, std::memory_order_relaxed);
         ResetAnchor_l();
@@ -365,6 +373,9 @@ private:
         anchorNs_.store(0, std::memory_order_relaxed);
         anchorConfirmed_ = false;
         havePending_ = false;
+        anchorMisses_ = 0;
+        firstLiveNs_ = 0;
+        unconfirmed_ = false;
     }
 
     void PollLoop() {
@@ -388,7 +399,11 @@ private:
     // legacy (AudioTrack) path repeats a stale position or extrapolates one from
     // the mixer, which is off by the hardware latency (90-130 ms on the API 31
     // emulator). So an anchor is only published once the position has moved
-    // and two consecutive polls agree on it.
+    // and two consecutive polls agree on it. A device whose live timestamps
+    // never agree that closely (coarse HAL updates) falls back, after
+    // kMaxAnchorMisses and kMinUnconfirmedDelayNs, to the offset check alone
+    // until two agree again: a jittery anchor still carries the hardware
+    // latency that now + buffer leaves out.
     void PollTimestamp_l() {
         const auto ts = stream_->getTimestamp(CLOCK_MONOTONIC);
         if (!ts) return;
@@ -396,12 +411,35 @@ private:
         const int64_t written = stream_->getFramesWritten();
         const int64_t after = framesRendered_.load(std::memory_order_acquire);
         if (before != after) return; // a callback finished in between: retry next poll
-        const int64_t delta = written - before;
+        int64_t delta = written - before;
+        // A resampling stream counts written frames in its own blocks, so the
+        // offset dips by up to a block while it holds frames we rendered but it
+        // has not consumed. The largest offset within that wobble is the real one.
+        if (deltaTolerance_ > 0 && havePending_ && AbsDiff(delta, pendingDelta_) <= deltaTolerance_)
+            delta = std::max(delta, pendingDelta_);
         const int64_t position = ts.value().position;
         const int64_t anchor = ts.value().timestamp - FramesToNs(position - delta, rtRate_);
-        const bool agreed = havePending_ && position > pendingPosition_ &&
-                            AbsDiff(delta, pendingDelta_) <= deltaTolerance_ &&
-                            AbsDiff(anchor, pendingAnchor_) <= kAnchorToleranceNs + FramesToNs(deltaTolerance_, rtRate_);
+        const bool live = havePending_ && position > pendingPosition_ &&
+                          AbsDiff(delta, pendingDelta_) <= deltaTolerance_;
+        const int64_t toleranceNs = kAnchorToleranceNs + FramesToNs(deltaTolerance_, rtRate_);
+        const bool close = AbsDiff(anchor, pendingAnchor_) <= toleranceNs;
+        const int64_t now = HostTimeNs();
+        if (live && firstLiveNs_ == 0) firstLiveNs_ = now;
+        if (live && close) {
+            anchorMisses_ = 0;
+            unconfirmed_ = false;
+        } else if (live && anchorMisses_ < kMaxAnchorMisses) {
+            ++anchorMisses_;
+        }
+        if (live && !close && !unconfirmed_ && anchorMisses_ >= kMaxAnchorMisses &&
+            now - firstLiveNs_ >= kMinUnconfirmedDelayNs) {
+            unconfirmed_ = true;
+            __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                                "Oboe timestamps: %d live polls disagree by more than %.1f ms (%.1f s after the "
+                                "position first moved); accepting them unconfirmed",
+                                kMaxAnchorMisses, toleranceNs * 1e-6, (now - firstLiveNs_) * 1e-9);
+        }
+        const bool agreed = live && (close || unconfirmed_);
         pendingDelta_ = delta;
         pendingAnchor_ = anchor;
         pendingPosition_ = position;
@@ -434,6 +472,9 @@ private:
     bool quitPoller_ = false;
     bool anchorConfirmed_ = false;
     bool havePending_ = false;
+    int anchorMisses_ = 0;      // live polls since two last agreed (frozen polls do not count)
+    int64_t firstLiveNs_ = 0;   // host time of the first poll whose position moved
+    bool unconfirmed_ = false;  // publishing anchors that no second poll confirmed
     int64_t pendingDelta_ = 0;
     int64_t pendingAnchor_ = 0;
     int64_t pendingPosition_ = 0;
