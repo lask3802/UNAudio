@@ -33,8 +33,11 @@ set(UNAUDIO_OBOE_DIR "" CACHE PATH "Android: local Oboe checkout (overrides fetc
 
 set(UNA_CORE_SOURCES
     Source/Core/Platform.cpp
+    Source/Decode/SourceDecoder.cpp
     Source/Decode/VorbisSource.cpp
     Source/Decode/WavSource.cpp
+    Source/Decode/FlacSource.cpp
+    Source/Decode/Mp3Source.cpp
     Source/Decode/Resampler.cpp
     Source/Decode/DecodePipeline.cpp
     Source/Engine/Clip.cpp
@@ -164,6 +167,7 @@ if(UNAUDIO_BUILD_TESTS)
         Tests/TestUtil.cpp
         Tests/test_queues.cpp
         Tests/test_decode.cpp
+        Tests/test_formats.cpp
         Tests/test_resampler.cpp
         Tests/test_clock.cpp
         Tests/test_engine.cpp

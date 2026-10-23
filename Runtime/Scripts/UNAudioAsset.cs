@@ -6,7 +6,7 @@ using UnityEngine;
 namespace UNAudio
 {
     /// <summary>
-    /// An imported audio file (Ogg Vorbis or WAV) kept compressed exactly as authored.
+    /// An imported audio file (Ogg Vorbis, WAV, MP3 or FLAC) kept compressed exactly as authored.
     /// The encoded bytes live in a <see cref="TextAsset"/> sub-asset, so they ship in
     /// AssetBundles / Addressables untouched and are handed to the native decoder
     /// without a managed copy. Created by the UNAudio importer (see the README).
@@ -40,7 +40,7 @@ namespace UNAudio
         public long Frames => m_Frames;
         /// <summary>Length in seconds.</summary>
         public double Length => m_Length;
-        /// <summary>"vorbis" or "wav".</summary>
+        /// <summary>"vorbis", "wav", "mp3" or "flac".</summary>
         public string Format => m_Format;
 
         /// <summary>Starts a new, independent load with the importer's options (or <paramref name="options"/>).</summary>

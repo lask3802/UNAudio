@@ -7,13 +7,13 @@ using UnityEngine;
 namespace UNAudio.Editor
 {
     /// <summary>
-    /// Imports .ogg / .wav as a <see cref="UNAudioAsset"/> whose data is the original file,
-    /// untouched (no re-encode, no AudioClip). It is an importer <i>override</i>: Unity keeps
-    /// importing other audio files as AudioClips. Switch a file with
+    /// Imports .ogg / .wav / .mp3 / .flac as a <see cref="UNAudioAsset"/> whose data is the
+    /// original file, untouched (no re-encode, no AudioClip). It is an importer <i>override</i>:
+    /// Unity keeps importing other audio files as AudioClips. Switch a file with
     /// Assets ▸ UNAudio ▸ Import as UNAudio Asset, or in code with
     /// <see cref="UNAudioImporterUtility.UseUNAudio(string)"/>.
     /// </summary>
-    [ScriptedImporter(3, null, new[] { "ogg", "wav" })]
+    [ScriptedImporter(3, null, new[] { "ogg", "wav", "mp3", "flac" })]
     public sealed class UNAudioImporter : ScriptedImporter
     {
         [Tooltip("Decode: whole clip to PCM in the background (sound effects). Stream: decode while playing (music).")]
@@ -34,11 +34,17 @@ namespace UNAudio.Editor
             string baseName = Path.GetFileNameWithoutExtension(ctx.assetPath);
 
             UNAudioClipInfo info = default;
-            string format = Path.GetExtension(ctx.assetPath).TrimStart('.').ToLowerInvariant() == "wav" ? "wav" : "vorbis";
+            string format = Path.GetExtension(ctx.assetPath).TrimStart('.').ToLowerInvariant() switch
+            {
+                "wav" => "wav",
+                "mp3" => "mp3",
+                "flac" => "flac",
+                _ => "vorbis",
+            };
             try
             {
                 if (!UNAudioClip.TryProbe(bytes, out info))
-                    ctx.LogImportError($"UNAudio: '{ctx.assetPath}' is not a supported Ogg Vorbis / WAV file.");
+                    ctx.LogImportError($"UNAudio: '{ctx.assetPath}' is not a supported Ogg Vorbis / WAV / MP3 / FLAC file.");
             }
             catch (DllNotFoundException)
             {
@@ -65,7 +71,7 @@ namespace UNAudio.Editor
 
     public static class UNAudioImporterUtility
     {
-        /// <summary>Imports an .ogg/.wav as a UNAudioAsset instead of an AudioClip.</summary>
+        /// <summary>Imports an .ogg/.wav/.mp3/.flac as a UNAudioAsset instead of an AudioClip.</summary>
         public static void UseUNAudio(string assetPath)
         {
             AssetDatabase.SetImporterOverride<UNAudioImporter>(assetPath);
@@ -80,7 +86,7 @@ namespace UNAudio.Editor
         static bool IsAudio(string path)
         {
             var ext = Path.GetExtension(path).ToLowerInvariant();
-            return ext == ".ogg" || ext == ".wav";
+            return ext == ".ogg" || ext == ".wav" || ext == ".mp3" || ext == ".flac";
         }
 
         [MenuItem("Assets/UNAudio/Import as UNAudio Asset", false, 1100)]

@@ -6,8 +6,8 @@ namespace UNAudio
 {
     /// <summary>
     /// Loading audio straight out of AssetBundles. A bundle can carry either
-    /// <see cref="UNAudioAsset"/>s (imported .ogg/.wav) or plain <see cref="TextAsset"/>s
-    /// (.bytes files containing Ogg/WAV data); both reach the native decoder without a
+    /// <see cref="UNAudioAsset"/>s (imported .ogg/.wav/.mp3/.flac) or plain <see cref="TextAsset"/>s
+    /// (.bytes files containing Ogg/WAV/MP3/FLAC data); both reach the native decoder without a
     /// managed copy.
     /// </summary>
     public static class UNAudioAssetBundles

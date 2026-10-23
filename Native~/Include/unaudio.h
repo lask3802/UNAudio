@@ -199,7 +199,8 @@ typedef struct una_clip_info {
 
 /* Starts an async load. The clip handle is valid immediately; poll
  * una_clip_get_info or wait for UNA_EVENT_CLIP_* events. Unless BORROW is
- * set the bytes are copied before returning. Supported: Ogg Vorbis, WAV. */
+ * set the bytes are copied before returning. Supported: Ogg Vorbis, WAV,
+ * MP3 (Layer III), FLAC; detected from the content. */
 UNA_API int32_t  una_clip_load_memory(const void* data, int64_t size,
                                       const una_clip_params* params,
                                       una_clip* out_clip);

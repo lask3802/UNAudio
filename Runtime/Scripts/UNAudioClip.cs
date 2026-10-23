@@ -52,7 +52,7 @@ namespace UNAudio
     }
 
     /// <summary>
-    /// Audio data owned by the native engine (Ogg Vorbis or WAV). Loading returns at once
+    /// Audio data owned by the native engine (Ogg Vorbis, WAV, MP3 or FLAC). Loading returns at once
     /// and decodes on native worker threads; the clip becomes playable at
     /// <see cref="UNAudioClipState.Ready"/> (first slice decoded) while the rest decodes.
     /// Any number of voices can play one clip. Call <see cref="Dispose"/> when done; voices

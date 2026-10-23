@@ -132,24 +132,6 @@ private:
     int64_t pos_ = 0;
 };
 
-std::unique_ptr<SourceDecoder> CreateVorbisSource();
-
-SourceKind DetectSourceKind(const uint8_t* data, size_t size) {
-    if (!data || size < 12) return SourceKind::Unknown;
-    if (std::memcmp(data, "OggS", 4) == 0) return SourceKind::Vorbis;
-    if (std::memcmp(data, "RIFF", 4) == 0 && std::memcmp(data + 8, "WAVE", 4) == 0) return SourceKind::Wav;
-    return SourceKind::Unknown;
-}
-
-std::unique_ptr<SourceDecoder> CreateSourceDecoder(const uint8_t* data, size_t size) {
-    std::unique_ptr<SourceDecoder> dec;
-    switch (DetectSourceKind(data, size)) {
-        case SourceKind::Vorbis: dec = CreateVorbisSource(); break;
-        case SourceKind::Wav:    dec = std::make_unique<WavSource>(); break;
-        default: return nullptr;
-    }
-    if (!dec->Open(data, size)) return nullptr;
-    return dec;
-}
+std::unique_ptr<SourceDecoder> CreateWavSource() { return std::make_unique<WavSource>(); }
 
 } // namespace una

@@ -11,7 +11,8 @@ namespace {
 
 enum Role { FL, FR, FC, LFE, SL, SR, BL, BR, BC };
 
-// Channel orders: Vorbis I spec §4.3.9 and the WAVE default channel mask.
+// Channel orders: Vorbis I spec §4.3.9 and the WAVE default channel mask (FLAC uses the
+// WAVE order; MP3 has at most two channels).
 const Role* ChannelRoles(SourceKind kind, int channels) {
     static const Role vorbis[9][8] = {
         {}, {FC}, {FL, FR}, {FL, FC, FR}, {FL, FR, BL, BR}, {FL, FC, FR, BL, BR},
