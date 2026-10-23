@@ -61,16 +61,14 @@ namespace UNAudio
         public static int Session => s_Session;
 
         /// <summary>
-        /// Output format and the backend's current latency estimate, which some backends refine
-        /// once the stream reports real timestamps (Android, Apple).
+        /// Output format and latency, refreshed every frame: some backends refine their latency while
+        /// running (Android once AAudio reports real timestamps, iOS when the audio route changes).
         /// </summary>
         public static UNAudioDeviceInfo Device
         {
             get
             {
                 EnsureInitialized();
-                una_device_info info;
-                if (UNAudioNative.una_get_device_info(&info) == 0) s_Device = new UNAudioDeviceInfo(info);
                 return s_Device;
             }
         }
@@ -204,8 +202,20 @@ namespace UNAudio
             if (!s_Initialized) return;
             UNAudioClock.Refresh();
             UNAudioNative.una_update();
+            RefreshDeviceLatency();
             DispatchEvents();
             UNAudioPreloader.Tick();
+        }
+
+        // Once per frame rather than per Device read: UNAudioClock's conversions read Device on any
+        // thread, and the native call takes the engine's control lock. The format itself only
+        // changes with DeviceChanged.
+        static void RefreshDeviceLatency()
+        {
+            una_device_info info;
+            if (UNAudioNative.una_get_device_info(&info) == 0 && info.sample_rate == s_Device.SampleRate &&
+                info.latency_frames != s_Device.LatencyFrames)
+                s_Device = new UNAudioDeviceInfo(info);
         }
 
         static void DispatchEvents()

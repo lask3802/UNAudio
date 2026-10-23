@@ -30,13 +30,20 @@ public:
 
     /// Sample-accurate seek. The next Read starts at `frame`.
     virtual bool Seek(int64_t frame) = 0;
+
+    /// Length already counted by an earlier open of the same bytes, so a decoder whose
+    /// container omits it (FLAC without a STREAMINFO total) need not count again. Before Open.
+    void SetLengthHint(int64_t frames) { lengthHint_ = frames; }
+
+protected:
+    int64_t lengthHint_ = 0;
 };
 
 enum class SourceKind { Unknown, Vorbis, Wav, Flac, Mp3 };
 
 /// Identifies the container from its content (never the file name).
 SourceKind DetectSourceKind(const uint8_t* data, size_t size);
-std::unique_ptr<SourceDecoder> CreateSourceDecoder(const uint8_t* data, size_t size);
+std::unique_ptr<SourceDecoder> CreateSourceDecoder(const uint8_t* data, size_t size, int64_t lengthHint = 0);
 
 /// Offset of the first byte after any leading ID3v2 tags (FLAC and MP3 may carry them);
 /// `size` when a tag runs past the end.

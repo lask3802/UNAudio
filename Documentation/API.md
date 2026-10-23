@@ -131,4 +131,13 @@
 
 帶時間的命令超過 8192 筆待執行時，API 回 `UNA_E_QUEUE_FULL`，不會被提早套用。串流 clip 搭配 `UNA_CLIP_FLAG_BORROW` 時，借用的記憶體要保留到 `UNA_EVENT_CLIP_FREED`。
 
-串流 voice 的 decoder 打不開、seek 失敗，或資料在檔頭宣告的長度之前就斷掉（截斷、損毀）時，先發 `UNA_EVENT_VOICE_ERROR`（`value` 是 `una_result`：`UNA_E_FORMAT`、`UNA_E_DECODE`、`UNA_E_OUT_OF_MEMORY`），再在同一個 dsp frame 發 `UNA_EVENT_VOICE_ENDED`。失敗前已經解出的資料會先播完，結束點就在最後一個解出的 frame 之後，不會出現 `STARVED`，也不會有沒發生的 `LOOPED`。decoder 偵測損毀的粒度是它自己的封包（Vorbis 是一個 page），所以損毀處之前可能先播出一小段 decoder 解出的靜音。Decode 模式的 clip 遇到同樣的資料會補靜音，clip 仍然是 `Loaded`。
+串流 voice 的 decoder 打不開、seek 失敗，或資料在檔頭宣告的長度之前就斷掉（截斷、損毀）時，先發 `UNA_EVENT_VOICE_ERROR`（`value` 是 `una_result`：`UNA_E_FORMAT`、`UNA_E_DECODE`、`UNA_E_OUT_OF_MEMORY`），再在同一個 dsp frame 發 `UNA_EVENT_VOICE_ENDED`。失敗前已經解出的資料會先播完，結束點就在最後一個解出的 frame 之後，不會出現 `STARVED`，也不會有沒發生的 `LOOPED`。能不能偵測到損毀，取決於格式：
+
+| 格式 | 截斷 | 中段損毀 |
+|---|---|---|
+| Vorbis | 截斷得多時 Open 就拒絕（`UnsupportedFormat`）；否則長度取自最後一個完整的 page 而變短，不算錯誤 | 在損毀的 page 停止並回報 `DecodeError`；損毀處之前可能先播出一小段 decoder 解成的靜音 |
+| FLAC | Open 時就拒絕（`UnsupportedFormat`） | CRC 不符的 frame 被 dr_flac 跳過，之後的聲音提早，到結尾才因為長度不足回報 `DecodeError` |
+| MP3 | 長度取自實際存在的完整 frame，不算錯誤 | 損毀的 frame 解成靜音，不回報 |
+| WAV | 長度取自實際的資料大小，不算錯誤 | 無法偵測（PCM 沒有檢查碼） |
+
+Vorbis 檔的第一個 page 的 granule 不是 0 時（例如從直播串流剪下來的檔案），宣告長度會比實際能解出的長，串流 voice 會在播完後回報 `DecodeError`。Decode 模式的 clip 遇到資料不足會補靜音，clip 仍然是 `Loaded`。

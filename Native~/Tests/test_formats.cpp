@@ -403,6 +403,13 @@ TEST(Formats, FlacWithoutLengthIsCountedAndSeekable) {
         for (size_t c = 0; c < 2; ++c)
             for (size_t i = 0; i < got[c].size(); ++i) ASSERT_EQ(got[c][i], ref[c][size_t(t) + i]) << t;
     }
+    // Stream voices reopen the bytes with the length the clip already counted.
+    auto h = una::CreateSourceDecoder(data.data(), data.size(), 48000);
+    ASSERT_TRUE(h);
+    EXPECT_EQ(h->Format().totalFrames, 48000);
+    EXPECT_EQ(DecodeSource(*h), ref);
+    ASSERT_TRUE(h->Seek(47000));
+    EXPECT_EQ(DecodeSource(*h)[0].size(), 1000u);
 }
 
 TEST(Formats, GarbageAndLookalikesAreRejected) {

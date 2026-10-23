@@ -269,13 +269,15 @@ int Engine::GetDeviceInfo(una_device_info& out) {
     // Backends refine their latency once the stream reports timestamps (AAudio, CoreAudio), so
     // the copy from Init or the last device change goes stale. Read it before taking devMutex_:
     // a device thread may hold its own info lock while it reports a change.
-    const int latency = device_ ? device_->Info().latencyFrames : -1;
+    DeviceInfo live;
+    if (device_) live = device_->Info();
     std::lock_guard<std::mutex> dl(devMutex_);
     std::memset(&out, 0, sizeof(out));
     out.sample_rate = devInfo_.sampleRate;
     out.channels = devInfo_.channels;
     out.buffer_frames = devInfo_.bufferFrames;
-    out.latency_frames = latency >= 0 ? latency : devInfo_.latencyFrames;
+    // Between a stream reopen and its OnDeviceChanged the live figure counts frames of the new rate.
+    out.latency_frames = device_ && live.sampleRate == devInfo_.sampleRate ? live.latencyFrames : devInfo_.latencyFrames;
     out.exclusive = devInfo_.exclusive ? 1 : 0;
     out.backend = devInfo_.backend;
     return UNA_OK;

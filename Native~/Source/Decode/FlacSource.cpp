@@ -56,7 +56,12 @@ public:
         scratch_.resize(static_cast<size_t>(kScratchFrames) * f_->channels);
 
         drflac_uint64 total = f_->totalPCMFrameCount;
-        if (total == 0) {
+        if (total == 0 && lengthHint_ > 0) {
+            // Counted when the clip was probed; every stream voice would otherwise decode the
+            // whole file again on the stream thread.
+            total = static_cast<drflac_uint64>(lengthHint_);
+            f_->totalPCMFrameCount = total;
+        } else if (total == 0) {
             // STREAMINFO leaves the length unknown (written by a non-seekable encoder): count it.
             drflac_uint64 n;
             while ((n = drflac_read_pcm_frames_f32(f_, kScratchFrames, scratch_.data())) > 0) total += n;

@@ -35,7 +35,7 @@ SourceKind DetectSourceKind(const uint8_t* data, size_t size) {
     return SourceKind::Unknown;
 }
 
-std::unique_ptr<SourceDecoder> CreateSourceDecoder(const uint8_t* data, size_t size) {
+std::unique_ptr<SourceDecoder> CreateSourceDecoder(const uint8_t* data, size_t size, int64_t lengthHint) {
     std::unique_ptr<SourceDecoder> dec;
     switch (DetectSourceKind(data, size)) {
         case SourceKind::Vorbis: dec = CreateVorbisSource(); break;
@@ -44,6 +44,7 @@ std::unique_ptr<SourceDecoder> CreateSourceDecoder(const uint8_t* data, size_t s
         case SourceKind::Mp3:    dec = CreateMp3Source(); break;
         default: return nullptr;
     }
+    dec->SetLengthHint(lengthHint);
     if (!dec->Open(data, size)) return nullptr;
     return dec;
 }

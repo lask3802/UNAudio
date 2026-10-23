@@ -173,6 +173,7 @@ bool DecodeService::Step(Clip* clip) {
         clip->sourceRate = pipe->SourceRate();
         clip->storedRate = pipe->StoredRate();
         clip->totalFrames = pipe->TotalFrames();
+        clip->sourceFrames = pipe->SourceFrames();
 
         if (clip->mode == UNA_LOAD_STREAM) {
             // Each stream voice opens its own pipeline on the shared bytes.

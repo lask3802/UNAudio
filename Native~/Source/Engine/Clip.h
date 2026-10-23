@@ -45,6 +45,7 @@ struct Clip {
     int sourceRate = 0;
     int storedRate = 0;
     int64_t totalFrames = 0;
+    int64_t sourceFrames = 0;           // at sourceRate; lets stream decoders skip counting
 
     // PCM (DECODE mode): interleaved, allocated once, never moved.
     void* pcm = nullptr;

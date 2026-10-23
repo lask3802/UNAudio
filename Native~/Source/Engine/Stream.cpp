@@ -29,7 +29,7 @@ bool Stream::Refill() {
         // (borrowed memory) or memory ran out; this runs on the stream thread, never throw.
         int rc;
         try {
-            rc = pipe_.Open(clip_->src, clip_->srcSize, targetRate_);
+            rc = pipe_.Open(clip_->src, clip_->srcSize, targetRate_, clip_->sourceFrames);
         } catch (...) {
             rc = UNA_E_OUT_OF_MEMORY;
         }

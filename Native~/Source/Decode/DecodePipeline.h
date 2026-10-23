@@ -15,11 +15,13 @@ class DecodePipeline {
 public:
     static constexpr int kChunk = 2048;
 
-    /// `targetRate` <= 0 keeps the source rate. Returns a una_result code.
-    int Open(const uint8_t* data, size_t size, int targetRate);
+    /// `targetRate` <= 0 keeps the source rate. `sourceFrames`: SourceFrames() of an earlier
+    /// open of the same bytes, if known. Returns a una_result code.
+    int Open(const uint8_t* data, size_t size, int targetRate, int64_t sourceFrames = 0);
 
     int SourceRate() const { return srcFmt_.sampleRate; }
     int SourceChannels() const { return srcFmt_.channels; }
+    int64_t SourceFrames() const { return srcFmt_.totalFrames; }
     int StoredRate() const { return storedRate_; }
     int StoredChannels() const { return storedChannels_; }
     int64_t TotalFrames() const { return total_; }

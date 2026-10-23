@@ -26,10 +26,10 @@ const Role* ChannelRoles(SourceKind kind, int channels) {
 
 } // namespace
 
-int DecodePipeline::Open(const uint8_t* data, size_t size, int targetRate) {
+int DecodePipeline::Open(const uint8_t* data, size_t size, int targetRate, int64_t sourceFrames) {
     kind_ = DetectSourceKind(data, size);
     if (kind_ == SourceKind::Unknown) return UNA_E_FORMAT;
-    dec_ = CreateSourceDecoder(data, size);
+    dec_ = CreateSourceDecoder(data, size, sourceFrames);
     if (!dec_) return UNA_E_FORMAT;
     srcFmt_ = dec_->Format();
 

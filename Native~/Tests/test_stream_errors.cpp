@@ -43,7 +43,7 @@ void Collect(Outcome& o, una_voice v) {
 }
 
 Outcome RenderUntilEnded(ManualEngine& e, una_voice v, Outcome o = Outcome()) {
-    for (int i = 0; i < 400 && !o.ended; ++i) {
+    for (int i = 0; i < 1000 && !o.ended; ++i) {
         e.Render(256);
         Collect(o, v);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -177,6 +177,98 @@ TEST(StreamErrors, EveryFixtureDeliversItsDeclaredLength) {
             while (pipe.Read(out, 4096) > 0) {}
             EXPECT_FALSE(pipe.SourceEndedEarly()) << name << " @" << rate << " after seek";
         }
+    }
+}
+
+// Truncated files either fail to open or report the length they can actually deliver, so a
+// download cut short is not mistaken for corruption (see the format table in API.md). FLAC
+// checks its last frame at open; Vorbis and MP3 take the length of what is left.
+TEST(StreamErrors, TruncatedFilesOpenWithTheLengthTheyDeliver) {
+    struct Case { const char* name; bool opensWhenCut; };
+    const Case cases[] = {{"tone_48k_stereo_3s.ogg", true},   {"tone_44k_mono_2s.ogg", true},
+                          {"flac_48k_stereo_16.flac", false}, {"flac_44k_mono_24.flac", false},
+                          {"mp3_44k_stereo_cbr.mp3", true},   {"mp3_44k_stereo_vbr.mp3", true},
+                          {"mp3_48k_id3.mp3", true}};
+    std::vector<float> l(4096), r(4096);
+    float* out[2] = {l.data(), r.data()};
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.name);
+        const auto full = ReadFixture(c.name);
+        una::DecodePipeline whole;
+        ASSERT_EQ(whole.Open(full.data(), full.size(), 0), UNA_OK);
+        int opened = 0;
+        for (int percent : {50, 75, 90, 99}) {
+            SCOPED_TRACE(percent);
+            const std::vector<uint8_t> cut(full.begin(), full.begin() + static_cast<std::ptrdiff_t>(full.size() * percent / 100));
+            una::DecodePipeline pipe;
+            const int rc = pipe.Open(cut.data(), cut.size(), 0);
+            if (rc != UNA_OK) {
+                EXPECT_EQ(rc, UNA_E_FORMAT);
+                continue;
+            }
+            ++opened;
+            EXPECT_LT(pipe.TotalFrames(), whole.TotalFrames());
+            int64_t n = 0;
+            for (int got; (got = pipe.Read(out, 4096)) > 0;) n += got;
+            EXPECT_EQ(n, pipe.TotalFrames());
+            EXPECT_FALSE(pipe.SourceEndedEarly());
+        }
+        if (c.opensWhenCut) EXPECT_GT(opened, 0);
+        else EXPECT_EQ(opened, 0);
+    }
+}
+
+// Frames a decoder delivers from `start` when every byte from `cut` on is zeroed after the
+// seek, as the stream voice below sees them. Independent of DecodePipeline's bookkeeping.
+static int64_t IntactFramesFrom(std::vector<uint8_t> bytes, int64_t start, size_t cut) {
+    auto dec = una::CreateSourceDecoder(bytes.data(), bytes.size());
+    if (!dec || !dec->Seek(start)) return -1;
+    std::fill(bytes.begin() + static_cast<std::ptrdiff_t>(cut), bytes.end(), uint8_t(0));
+    std::vector<float> l(4096), r(4096);
+    float* out[2] = {l.data(), r.data()};
+    int64_t n = 0;
+    for (int got; (got = dec->Read(out, 4096)) > 0;) n += got;
+    return n;
+}
+
+// Seek (start_frame), pitch and a damaged tail together: the voice must end exactly after the
+// last output frame whose position lies inside the decoded data.
+TEST(StreamErrors, TruncationAfterSeekEndsAtTheExactFrameAtAnyPitch) {
+    const std::vector<uint8_t> original = ReadFixture("tone_48k_stereo_3s.ogg");
+    constexpr int64_t kStartFrame = 24000, kStartDsp = 4196;
+    const size_t cut = original.size() * 3 / 4;
+    const int64_t intact = IntactFramesFrom(original, kStartFrame, cut);
+    ASSERT_GT(intact, 32768);
+    ASSERT_LT(intact, 144000 - kStartFrame);
+
+    for (float pitch : {1.0f, 1.37f, 0.61f}) {
+        ManualEngine e;
+        ASSERT_TRUE(e.ok());
+        std::vector<uint8_t> bytes = original;
+        una_clip c = LoadClip(bytes, UNA_LOAD_STREAM, UNA_SAMPLE_FLOAT32, UNA_CLIP_FLAG_BORROW);
+        ASSERT_EQ(WaitClip(c, UNA_CLIP_LOADED), UNA_CLIP_LOADED);
+        una_play_params p = DefaultPlay();
+        p.start_dsp_frame = kStartDsp;
+        p.start_frame = kStartFrame;
+        p.pitch = pitch;
+        una_voice v = 0;
+        ASSERT_EQ(una_voice_play(c, &p, &v), UNA_OK);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        una_stats st{};
+        una_get_stats(&st);  // orders the producer's last reads before the writes below
+        std::fill(bytes.begin() + static_cast<std::ptrdiff_t>(cut), bytes.end(), uint8_t(0));
+
+        const Outcome o = RenderUntilEnded(e, v);
+        ASSERT_TRUE(o.ended) << pitch;
+        EXPECT_TRUE(o.error) << pitch;
+        EXPECT_EQ(o.errorValue, UNA_E_DECODE) << pitch;
+        EXPECT_FALSE(o.starved) << pitch;
+        const uint64_t step = static_cast<uint64_t>(std::llround(double(pitch) * 4294967296.0));
+        const int64_t expected = static_cast<int64_t>(((static_cast<uint64_t>(intact) << 32) + step - 1) / step);
+        EXPECT_EQ(o.endDsp - kStartDsp, expected) << "pitch " << pitch;
+        EXPECT_EQ(o.errorDsp, o.endDsp) << pitch;
+        una_clip_release(c);
+        una_update();
     }
 }
 

@@ -306,11 +306,13 @@ typedef enum una_event_type {
     UNA_EVENT_VOICE_LOOPED         = 12,
     UNA_EVENT_VOICE_STARVED        = 13, /* value = frames of silence inserted */
     UNA_EVENT_VOICE_ERROR          = 14, /* value = una_result; a stream voice could
-                                            not decode (open or seek failed, data
-                                            truncated or corrupt) after playing all
-                                            it decoded. VOICE_ENDED follows at the
-                                            same dsp_frame. Decode-mode clips pad
-                                            missing data with silence instead.    */
+                                            not decode (open or seek failed, or the
+                                            decoder ran out of data before the
+                                            declared length) after playing all it
+                                            decoded. VOICE_ENDED follows at the
+                                            same dsp_frame. What counts as damage
+                                            depends on the format: see API.md.
+                                            Decode-mode clips pad with silence.   */
     UNA_EVENT_DEVICE_CHANGED       = 20, /* value = new sample rate           */
     UNA_EVENT_DEVICE_LOST          = 21
 } una_event_type;
