@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -144,6 +145,31 @@ TEST(Simd, MasterInPlace) {
     mix::scalar::Master(buf.data(), ref.data(), 33, 1.0f, 0.0f, 0, 0.5f, b[0], b[1]);
     mix::Master(buf.data(), buf.data(), 33, 1.0f, 0.0f, 0, 0.5f, a[0], a[1]);
     ExpectClose(buf, ref, "master in place", 33);
+}
+
+TEST(Simd, MasterTurnsNaNIntoSilence) {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    for (int n : {1, 2, 3, 8, 9}) {
+        std::vector<float> in(static_cast<size_t>(n) * 2, 0.25f);
+        in[0] = nan;
+        in[in.size() - 1] = nan;
+        if (n > 2) in[3] = inf;
+        for (int rampLeft : {0, n}) {
+            std::vector<float> a(in.size()), b(in.size());
+            float pa[2] = {0, 0}, pb[2] = {0, 0};
+            mix::Master(in.data(), a.data(), n, 1.0f, 0.0f, rampLeft, 1.0f, pa[0], pa[1]);
+            mix::scalar::Master(in.data(), b.data(), n, 1.0f, 0.0f, rampLeft, 1.0f, pb[0], pb[1]);
+            for (size_t i = 0; i < a.size(); ++i) {
+                ASSERT_FALSE(std::isnan(a[i])) << "n=" << n << " i=" << i;
+                ASSERT_EQ(a[i], b[i]) << "n=" << n << " i=" << i;
+            }
+            EXPECT_EQ(a[0], 0.0f);
+            EXPECT_EQ(pa[0], pb[0]);
+            EXPECT_EQ(pa[1], pb[1]);
+            EXPECT_FALSE(std::isnan(pa[0]) || std::isnan(pa[1]));
+        }
+    }
 }
 
 TEST(Simd, DotMatchesDoubleReference) {

@@ -538,6 +538,11 @@ void Engine::RenderVoice(VoiceSlot& s, int slotIndex, float* out, int n, int64_t
     const BusRT& bus = buses_[v.bus];
     int done = 0;
     while (done < n) {
+        // A failed stream ends right after its last decoded frame, before a loop wrap it never reached.
+        if (v.stream && v.stream->Failed()) {
+            FailVoice(s, slotIndex, dsp + done);
+            return;
+        }
         const bool loopValid = v.loop && v.loopStart < v.loopEnd;
         // At exactly loopEnd the loop wraps; only a position past it (seek beyond the region) plays on.
         const int64_t end = (loopValid && v.pos <= v.loopEnd) ? v.loopEnd : v.total;
@@ -566,8 +571,8 @@ void Engine::RenderVoice(VoiceSlot& s, int slotIndex, float* out, int n, int64_t
         if (v.panRamp.left > 0) chunk = std::min(chunk, v.panRamp.left);
         if (bus.gain.left > done) chunk = std::min(chunk, bus.gain.left - done);
 
-        const uint64_t adv = static_cast<uint64_t>(v.frac) + static_cast<uint64_t>(chunk) * v.step;
-        const int consumed = static_cast<int>(adv >> 32);
+        uint64_t adv = static_cast<uint64_t>(v.frac) + static_cast<uint64_t>(chunk) * v.step;
+        int consumed = static_cast<int>(adv >> 32);
         const uint64_t lastX = static_cast<uint64_t>(v.frac) + static_cast<uint64_t>(chunk - 1) * v.step;
         const int need = std::max(static_cast<int>(lastX >> 32) + 3, consumed + 1);
 
@@ -592,8 +597,25 @@ void Engine::RenderVoice(VoiceSlot& s, int slotIndex, float* out, int n, int64_t
                 v.stream->RequestSeek(v.pos);
                 streamer_.Wake();
             }
+            // Read before Peek: once decoding has failed, the ring holds everything it will get.
+            const bool complete = v.stream->DecodeFailed();
             const int avail = v.stream->Peek(st + ch, need, ch);
-            if (avail < consumed) starved = consumed - avail;
+            if (avail < consumed) {
+                if (!complete) {
+                    starved = consumed - avail;
+                } else {
+                    // Play the output frames that start before the data runs out; the next pass ends the voice.
+                    const uint64_t limit = static_cast<uint64_t>(avail) << 32;
+                    const int keep = limit > v.frac ? static_cast<int>((limit - v.frac + v.step - 1) / v.step) : 0;
+                    if (keep == 0) {
+                        FailVoice(s, slotIndex, dsp + done);
+                        return;
+                    }
+                    chunk = std::min(chunk, keep);
+                    adv = static_cast<uint64_t>(v.frac) + static_cast<uint64_t>(chunk) * v.step;
+                    consumed = static_cast<int>(adv >> 32);
+                }
+            }
         } else {
             FetchDecoded(v, v.pos, need, st + ch, end);
             const int64_t decoded = v.clip->decodedFrames.load(std::memory_order_relaxed);

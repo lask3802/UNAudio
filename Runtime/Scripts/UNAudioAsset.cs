@@ -28,10 +28,11 @@ namespace UNAudio
         public TextAsset Data => m_Data;
         public UNAudioLoadOptions LoadOptions => m_LoadOptions;
         /// <summary>
-        /// Like <see cref="AudioClip.preloadAudioData"/>: the shared <see cref="Clip"/> starts loading
-        /// on the frame after this asset is loaded in a running game (scene reference, Resources,
-        /// AssetBundle), instead of on first use. In the editor, assets already in memory start when
-        /// play mode begins.
+        /// Like <see cref="AudioClip.preloadAudioData"/>: while this asset is loaded in a running game
+        /// (scene reference, Resources, AssetBundle), its shared <see cref="Clip"/> starts loading on
+        /// the next frame instead of on first use. Preloading never initialises the engine: it starts
+        /// on the first frame after <see cref="UNAudioEngine.Initialize"/> (or the first lazy
+        /// initialisation), and again after every re-initialisation.
         /// </summary>
         public bool PreloadAudioData => m_PreloadAudioData;
         public int Channels => m_Channels;
@@ -120,59 +121,58 @@ namespace UNAudio
     }
 
     /// <summary>
-    /// Starts the shared clips of <see cref="UNAudioAsset.PreloadAudioData"/> assets on the next
-    /// PlayerLoop tick (main thread, play mode). <c>OnEnable</c> runs while the asset is still being
-    /// integrated (e.g. an async AssetBundle load), so it only registers; assets enabled outside play
-    /// mode (edit mode, the domain reload before play mode) wait until play mode starts.
+    /// Starts the shared clips of loaded <see cref="UNAudioAsset.PreloadAudioData"/> assets from the
+    /// engine tick (main thread, play mode): once per engine session and again whenever an asset
+    /// is added. It never initialises the engine itself, which would race the game's own
+    /// <see cref="UNAudioEngine.Initialize"/> call and silently replace its config.
+    /// <c>OnEnable</c> runs while the asset is still being integrated (e.g. an async AssetBundle
+    /// load), so it only registers.
     /// </summary>
     static class UNAudioPreloader
     {
         static readonly object s_Lock = new object();
-        static readonly HashSet<UNAudioAsset> s_Waiting = new HashSet<UNAudioAsset>();
-        static volatile bool s_HasWaiting;
-
-        internal static bool HasWaiting => s_HasWaiting;
+        // Every loaded preload asset (kept across sessions: without a domain reload the
+        // assets stay loaded and are not enabled again).
+        static readonly HashSet<UNAudioAsset> s_Assets = new HashSet<UNAudioAsset>();
+        static volatile bool s_Added;  // registered since the last flush
+        static int s_FlushedSession;
 
         internal static void Add(UNAudioAsset asset)
         {
             lock (s_Lock)
             {
-                s_Waiting.Add(asset);
-                s_HasWaiting = true;
+                s_Assets.Add(asset);
+                s_Added = true;
             }
-            // The tick runs even before the engine is initialised (the preload initialises it).
-            if (UNAudioEngine.IsMainThread && Application.isPlaying) UNAudioPlayerLoop.EnsureUpdateHook();
         }
 
         internal static void Remove(UNAudioAsset asset)
         {
-            lock (s_Lock)
-            {
-                s_Waiting.Remove(asset);
-                s_HasWaiting = s_Waiting.Count > 0;
-            }
+            lock (s_Lock) s_Assets.Remove(asset);
         }
 
-        internal static bool IsWaiting(UNAudioAsset asset)
+        internal static bool IsRegistered(UNAudioAsset asset)
         {
-            lock (s_Lock) return s_Waiting.Contains(asset);
+            lock (s_Lock) return s_Assets.Contains(asset);
         }
 
-        /// <summary>Main thread, play mode: starts every waiting asset (tests may skip the play-mode check).</summary>
-        internal static void Flush(bool requirePlayMode = true)
+        /// <summary>Called by <see cref="UNAudioEngine.Update"/> (tests may skip the play-mode check).</summary>
+        internal static void Tick(bool requirePlayMode = true)
         {
-            if (!s_HasWaiting || (requirePlayMode && !Application.isPlaying)) return;
+            if (!UNAudioEngine.IsInitialized) return;
+            if (!s_Added && s_FlushedSession == UNAudioEngine.Session) return;
+            if (requirePlayMode && !Application.isPlaying) return;
             UNAudioAsset[] assets;
             lock (s_Lock)
             {
-                assets = new UNAudioAsset[s_Waiting.Count];
-                s_Waiting.CopyTo(assets);
-                s_Waiting.Clear();
-                s_HasWaiting = false;
+                assets = new UNAudioAsset[s_Assets.Count];
+                s_Assets.CopyTo(assets);
+                s_Added = false;
             }
+            s_FlushedSession = UNAudioEngine.Session;
             foreach (var asset in assets)
             {
-                if (asset == null) continue;  // destroyed while waiting
+                if (asset == null) continue;  // destroyed without OnDisable
                 try
                 {
                     asset.StartPreload();
@@ -183,8 +183,5 @@ namespace UNAudio
                 }
             }
         }
-
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
-        static void OnPlayModeStart() => Flush();
     }
 }

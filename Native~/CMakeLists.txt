@@ -117,7 +117,7 @@ if(UNA_APPLE_MOBILE)
     # Unity links iOS plugins statically ("__Internal").
     add_library(UNAudio STATIC ${UNA_API_SOURCES} ${UNA_CORE_SOURCES})
     target_include_directories(UNAudio PRIVATE Include Source)
-    target_compile_definitions(UNAudio PRIVATE UNAUDIO_BUILDING)
+    target_compile_definitions(UNAudio PRIVATE UNAUDIO_BUILDING $<$<NOT:$<BOOL:${UNAUDIO_SIMD}>>:UNA_NO_SIMD>)
     # Same flags as unaudio_core; only the una_* API stays visible once Unity links us in.
     target_compile_options(UNAudio PRIVATE -Wall -Wextra -Wno-unused-parameter $<$<CONFIG:Release>:-O3>
         $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)

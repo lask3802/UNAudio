@@ -171,10 +171,6 @@ namespace UNAudio
 
         internal static void CaptureMainThread() => s_MainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
 
-        /// <summary>False when the main thread is not known yet (very early startup).</summary>
-        internal static bool IsMainThread =>
-            s_MainThreadId != 0 && System.Threading.Thread.CurrentThread.ManagedThreadId == s_MainThreadId;
-
         /// <summary>
         /// Drops state left from a previous play session (enter play mode without a domain
         /// reload keeps statics, including handlers on destroyed objects and a remembered
@@ -199,11 +195,11 @@ namespace UNAudio
         /// </summary>
         public static void Update()
         {
-            if (UNAudioPreloader.HasWaiting) UNAudioPreloader.Flush();
             if (!s_Initialized) return;
             UNAudioClock.Refresh();
             UNAudioNative.una_update();
             DispatchEvents();
+            UNAudioPreloader.Tick();
         }
 
         static void DispatchEvents()
@@ -357,9 +353,6 @@ namespace UNAudio
             };
 #endif
         }
-
-        /// <summary>Only the per-frame tick (no shutdown hooks, no pause handler): safe from OnEnable.</summary>
-        internal static void EnsureUpdateHook() => InsertIntoPlayerLoop();
 
         static void InsertIntoPlayerLoop()
         {

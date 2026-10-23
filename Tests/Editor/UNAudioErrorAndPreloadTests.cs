@@ -85,36 +85,47 @@ namespace UNAudio.Tests
         }
 
         [UnityTest]
-        public IEnumerator PreloadAudioDataStartsTheSharedClipWhenLoaded()
+        public IEnumerator PreloadAudioDataStartsTheSharedClipOncePerEngineSession()
         {
+            UNAudioEngine.Shutdown();
             var preloaded = ImportTone("preload.ogg", true);
             var lazy = ImportTone("lazy.ogg", false);
-            // Edit mode: loading must wait for play mode (and the main thread).
-            Assert.IsTrue(UNAudioPreloader.IsWaiting(preloaded));
-            Assert.IsFalse(UNAudioPreloader.IsWaiting(lazy));
+            Assert.IsTrue(UNAudioPreloader.IsRegistered(preloaded));
+            Assert.IsFalse(UNAudioPreloader.IsRegistered(lazy));
+
+            // Never initialises the engine itself: that would take the game's own Initialize(config).
+            UNAudioPreloader.Tick(requirePlayMode: false);  // what UNAudioEngine.Update does in play mode
+            Assert.IsFalse(UNAudioEngine.IsInitialized);
             Assert.IsFalse(preloaded.IsClipLoaded);
 
             StartManual();
-            UNAudioPreloader.Flush(requirePlayMode: false);  // what play mode / the PlayerLoop does
+            UNAudioPreloader.Tick(requirePlayMode: false);
             Assert.IsTrue(preloaded.IsClipLoaded, "preload asset started its shared clip");
             Assert.IsFalse(lazy.IsClipLoaded, "assets without preload load on first use");
-            Assert.IsFalse(UNAudioPreloader.IsWaiting(preloaded));
             yield return Wait(() => preloaded.Clip.IsReady);
 
             var voice = preloaded.Play(UNAudioPlayParams.At(256));
             float[] o = Render(256 + 4800);
             Assert.Greater(Rms(o, 0, 256, 256 + 4800), 0.05);
             voice.Stop();
+
+            // A new session (or play mode without a domain reload) starts it again.
+            UNAudioEngine.Shutdown();
+            StartManual();
+            Assert.IsFalse(preloaded.IsClipLoaded);
+            UNAudioPreloader.Tick(requirePlayMode: false);
+            Assert.IsTrue(preloaded.IsClipLoaded, "restarted in the new session");
+            Assert.IsTrue(UNAudioPreloader.IsRegistered(preloaded));
         }
 
         [Test]
-        public void PreloadFlushOutsidePlayModeDoesNothing()
+        public void PreloadTickOutsidePlayModeDoesNothing()
         {
             var preloaded = ImportTone("preload_edit.ogg", true);
             StartManual();
-            UNAudioPreloader.Flush();  // edit mode: still waiting
-            Assert.IsTrue(UNAudioPreloader.IsWaiting(preloaded));
+            UNAudioPreloader.Tick();  // edit mode (inspector preview): no preloading
             Assert.IsFalse(preloaded.IsClipLoaded);
+            Assert.IsTrue(UNAudioPreloader.IsRegistered(preloaded));
         }
     }
 }

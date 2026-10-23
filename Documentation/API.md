@@ -105,7 +105,7 @@
 
 由 importer 產生。`Data`（原始檔案的 TextAsset）、`LoadOptions`、`Channels`、`SampleRate`、`Frames`、`Length`、`Format`；`Load(options)` 建立獨立 clip；`Clip` 共用 clip；`IsClipLoaded`；`LoadAsync()`；`Play()`；`Unload()`。
 
-`PreloadAudioData`（importer 的 **Preload Audio Data** 選項，預設關閉）對應 AudioClip 的同名設定：資產在執行中的遊戲裡被載入（場景參照、Resources、AssetBundle）後的下一幀，共用的 `Clip` 就開始 native 解碼，而不是等到第一次使用。Editor 裡已經在記憶體中的資產在進入 Play Mode 時開始。資產卸載時 clip 一起釋放。
+`PreloadAudioData`（importer 的 **Preload Audio Data** 選項，預設關閉）對應 AudioClip 的同名設定：資產在執行中的遊戲裡被載入（場景參照、Resources、AssetBundle）後的下一幀，共用的 `Clip` 就開始 native 解碼，而不是等到第一次使用。preload **不會自己初始化引擎**（否則會搶在你的 `Initialize(config)` 之前用 `DefaultConfig` 初始化），所以它從引擎初始化後的第一幀開始，每次重新初始化後也會重跑。想在載入畫面就開始解碼，就在啟動流程呼叫 `UNAudioEngine.Initialize(config)` 或 `EnsureInitialized()`。資產卸載時 clip 一起釋放。
 
 ## UNAudioAssetBundles（static）
 

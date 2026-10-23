@@ -122,7 +122,7 @@ Audio thread 每個 callback 都設定 flush-to-zero（SSE FTZ/DAZ、ARM FZ）�
 - Domain reload、離開 Play Mode、`Application.quitting` 時關閉 native engine；`UNAudioEngine.Session` 讓快取的 clip 與 voice 知道自己屬於舊 session，舊 voice 的所有控制都變成 no-op。
 - 載入 clip 與初始化只能在主執行緒呼叫（clip 登記表與 PlayerLoop 都不是 thread-safe，違反時直接丟例外）；voice 控制與時間查詢可以在任何執行緒呼叫。
 - `Task` 一律以 `RunContinuationsAsynchronously` 建立，continuation 不會在事件分派或 `Shutdown` 的迴圈中途執行。
-- `UNAudioAsset.PreloadAudioData`：資產的 `OnEnable` 只把自己登記到 `UNAudioPreloader`，因為 `OnEnable` 發生在資產還在整合的時候（例如非同步載入 AssetBundle），這時去讀同一個資產裡的 TextAsset 會觸發同步載入。真正開始載入在下一個 PlayerLoop tick（Play Mode 的主執行緒）；登記時會確保 PlayerLoop 已插入 UNAudio 的 tick，即使引擎還沒初始化（preload 本身會初始化它）。Edit mode 與進入 Play Mode 前的 domain reload 期間登記的資產，在 `BeforeSceneLoad` 開始。`OnDisable`（資產卸載）會取消登記並釋放 clip。
+- `UNAudioAsset.PreloadAudioData`：資產的 `OnEnable` 只把自己登記到 `UNAudioPreloader`，因為 `OnEnable` 發生在資產還在整合的時候（例如非同步載入 AssetBundle），這時去讀同一個資產裡的 TextAsset 會觸發同步載入。真正開始載入由 `UNAudioEngine.Update` 的 tick 負責（Play Mode 的主執行緒）：每個引擎 session 第一次 tick 時啟動所有已登記的資產，之後有新資產登記就再跑一次。preload 從不自己初始化引擎。如果它用 `DefaultConfig` 初始化，遊戲自己在 `Awake`／`Start` 呼叫的 `Initialize(config)` 會回 `AlreadyInitialized`，設定就被悄悄丟掉；而且 Editor（`BeforeSceneLoad`）和 Player（第一個 `EarlyUpdate`）的時序不同，結果還會因環境而異。登記清單跨 session 保留，因為關閉 domain reload 時資產留在記憶體裡、不會再收到 `OnEnable`。`OnDisable`（資產卸載）會取消登記並釋放 clip。
 - 隱藏的 `UNAudioPauseHandler` 接收 `OnApplicationPause`，在 `SuspendWhenPaused` 為 true（預設）時暫停輸出。不用 `Application.focusChanged`，因為桌面版切換視窗也會觸發，而設定了 `runInBackground` 的遊戲不該因此停止聲音。
 - `UNAudioClip.Load(TextAsset)` 用 `GetData<byte>()` 取得原生記憶體指標，整條路徑沒有 managed 配置（EditMode 測試量測 `GC.GetAllocatedBytesForCurrentThread` 驗證）。
 

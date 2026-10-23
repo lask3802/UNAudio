@@ -47,6 +47,8 @@ public:
     }
     /// Decoding failed and every frame produced before the failure has been played.
     bool Failed();
+    /// Decoding stopped with an error: the ring already holds every frame it will ever get.
+    bool DecodeFailed() const { return failed_.load(std::memory_order_acquire); }
     /// una_result describing the failure (valid once Failed()).
     int Error() const { return error_.load(std::memory_order_acquire); }
     /// Clip frame at the consumer cursor, or -1 when the ring has no data there yet.

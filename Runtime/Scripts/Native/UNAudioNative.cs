@@ -138,7 +138,8 @@ namespace UNAudio.Native
 
     internal static unsafe class UNAudioNative
     {
-#if UNITY_IOS && !UNITY_EDITOR
+#if (UNITY_IOS || UNITY_TVOS || UNITY_VISIONOS) && !UNITY_EDITOR
+        // Statically linked into the player (see Native~/CMakeLists.txt).
         private const string Lib = "__Internal";
 #else
         private const string Lib = "UNAudio";

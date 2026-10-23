@@ -74,6 +74,9 @@ void MasterFrom(int i, const float* mix, float* out, int n, float g0, float inc,
         const float g = i < rampLeft ? g0 + inc * static_cast<float>(i) : target;
         float l = mix[2 * i] * g;
         float r = mix[2 * i + 1] * g;
+        // NaN (a broken float clip, inf * 0) must never reach the device: it becomes silence.
+        if (l != l) l = 0.0f;
+        if (r != r) r = 0.0f;
         l = l > 1.0f ? 1.0f : (l < -1.0f ? -1.0f : l);
         r = r > 1.0f ? 1.0f : (r < -1.0f ? -1.0f : r);
         const float al = l < 0.0f ? -l : l, ar = r < 0.0f ? -r : r;
@@ -98,6 +101,7 @@ inline V Mul(V a, V b) { return _mm_mul_ps(a, b); }
 inline V Min(V a, V b) { return _mm_min_ps(a, b); }
 inline V Max(V a, V b) { return _mm_max_ps(a, b); }
 inline V Abs(V a) { return _mm_and_ps(a, _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF))); }
+inline V ZeroNaN(V a) { return _mm_and_ps(a, _mm_cmpeq_ps(a, a)); }
 /// lo = a0 b0 a1 b1, hi = a2 b2 a3 b3
 inline void Zip(V a, V b, V& lo, V& hi) { lo = _mm_unpacklo_ps(a, b); hi = _mm_unpackhi_ps(a, b); }
 /// p[0] p[1] q[0] q[1]
@@ -120,6 +124,7 @@ inline V Mul(V a, V b) { return vmulq_f32(a, b); }
 inline V Min(V a, V b) { return vminq_f32(a, b); }
 inline V Max(V a, V b) { return vmaxq_f32(a, b); }
 inline V Abs(V a) { return vabsq_f32(a); }
+inline V ZeroNaN(V a) { return vreinterpretq_f32_u32(vandq_u32(vreinterpretq_u32_f32(a), vceqq_f32(a, a))); }
 inline void Zip(V a, V b, V& lo, V& hi) {
     const float32x4x2_t z = vzipq_f32(a, b);
     lo = z.val[0];
@@ -289,7 +294,8 @@ void Master(const float* mix, float* out, int n, float g0, float inc, int rampLe
             const float a = g0 + inc * static_cast<float>(i);
             g = Set(a, a, target, target);
         }
-        const V x = Min(Max(Mul(Load(mix + 2 * i), g), minusOne), one);
+        // NaN handling differs between SSE and NEON min/max, so zero it first (as MasterFrom does).
+        const V x = Min(Max(ZeroNaN(Mul(Load(mix + 2 * i), g)), minusOne), one);
         pk = Max(pk, Abs(x));
         Store(out + 2 * i, x);
     }
