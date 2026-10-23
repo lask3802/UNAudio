@@ -4,8 +4,8 @@ using UnityEngine;
 namespace UNAudio.Samples
 {
     /// <summary>
-    /// Loads Ogg audio out of an AssetBundle. The bundle may contain UNAudioAssets
-    /// (imported .ogg/.wav) or plain TextAssets (.bytes files holding Ogg/WAV data).
+    /// Loads compressed audio out of an AssetBundle. The bundle may contain UNAudioAssets
+    /// (imported .ogg/.wav/.mp3/.flac) or plain TextAssets (.bytes files holding that data).
     /// The encoded bytes go from the bundle's native memory to the native decoder:
     /// no managed byte[] is ever created.
     /// </summary>

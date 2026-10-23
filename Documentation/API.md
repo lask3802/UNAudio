@@ -24,7 +24,7 @@
 | `UNAudioStats GetStats()` | callbacks、starved / dropped / late、active voices、CPU load、peak、clip 記憶體 |
 | `Render(float[] buffer, int frames)` | 只用於 `Manual` 裝置 |
 | 事件 `VoiceStarted / VoiceEnded / VoiceLooped(voice, dspFrame)`、`VoiceStarved(voice, frames)`、`DeviceChanged(sampleRate)`、`ShutdownCompleted` | |
-| 事件 `VoiceError(voice, UNAudioResult)` | 串流 voice 解碼失敗（開檔失敗 `UnsupportedFormat`；seek 失敗或資料截斷、損毀 `DecodeError`；記憶體不足 `OutOfMemory`）；已解出的資料播完後發出，之後一定接著同一個 dsp frame 的 `VoiceEnded` |
+| 事件 `VoiceError(voice, UNAudioResult)` | 串流 voice 解碼失敗（開檔失敗 `UnsupportedFormat`；seek 失敗或資料中段損毀 `DecodeError`；記憶體不足 `OutOfMemory`）；已解出的資料播完後發出，之後一定接著同一個 dsp frame 的 `VoiceEnded` |
 
 ## UNAudioConfig
 
@@ -131,13 +131,15 @@
 
 帶時間的命令超過 8192 筆待執行時，API 回 `UNA_E_QUEUE_FULL`，不會被提早套用。串流 clip 搭配 `UNA_CLIP_FLAG_BORROW` 時，借用的記憶體要保留到 `UNA_EVENT_CLIP_FREED`。
 
-串流 voice 的 decoder 打不開、seek 失敗，或資料在檔頭宣告的長度之前就斷掉（截斷、損毀）時，先發 `UNA_EVENT_VOICE_ERROR`（`value` 是 `una_result`：`UNA_E_FORMAT`、`UNA_E_DECODE`、`UNA_E_OUT_OF_MEMORY`），再在同一個 dsp frame 發 `UNA_EVENT_VOICE_ENDED`。失敗前已經解出的資料會先播完，結束點就在最後一個解出的 frame 之後，不會出現 `STARVED`，也不會有沒發生的 `LOOPED`。能不能偵測到損毀，取決於格式：
+串流 voice 的 decoder 打不開、seek 失敗，或解碼器在 clip 載入時算出的長度之前就解不出資料（資料損毀、借用的記憶體在載入後被改動）時，先發 `UNA_EVENT_VOICE_ERROR`（`value` 是 `una_result`：`UNA_E_FORMAT`、`UNA_E_DECODE`、`UNA_E_OUT_OF_MEMORY`），再在同一個 dsp frame 發 `UNA_EVENT_VOICE_ENDED`。失敗前已經解出的資料會先播完，結束點就在最後一個解出的 frame 之後，不會出現 `STARVED`，也不會有沒發生的 `LOOPED`。
 
-| 格式 | 截斷 | 中段損毀 |
+載入前就被截斷的檔案不會觸發這個事件：clip 載入時就失敗，或者長度變短、照常播完。要偵測下載不完整，請比對檔案大小或雜湊。能不能偵測到損毀，取決於格式（主要行為由 `test_stream_errors.cpp` 的截斷與損毀測試鎖定）：
+
+| 格式 | 載入前就截斷的檔案 | 中段損毀（clip 仍能載入時） |
 |---|---|---|
-| Vorbis | 截斷得多時 Open 就拒絕（`UnsupportedFormat`）；否則長度取自最後一個完整的 page 而變短，不算錯誤 | 在損毀的 page 停止並回報 `DecodeError`；損毀處之前可能先播出一小段 decoder 解成的靜音 |
-| FLAC | Open 時就拒絕（`UnsupportedFormat`） | CRC 不符的 frame 被 dr_flac 跳過，之後的聲音提早，到結尾才因為長度不足回報 `DecodeError` |
-| MP3 | 長度取自實際存在的完整 frame，不算錯誤 | 損毀的 frame 解成靜音，不回報 |
+| Vorbis | 截斷得多時載入失敗（`UnsupportedFormat`）；否則長度變短，不算錯誤 | 損毀大到 page 解不開時，在那裡停止並回報 `DecodeError`，之前可能先播出一小段靜音。stb_vorbis 不檢查 page CRC，小範圍損毀會解出失真的聲音而不回報；損毀落在 page header 時，載入時算出的長度可能變短 |
+| FLAC | STREAMINFO 有長度時載入失敗（`UnsupportedFormat`，載入時會試解最後一個 frame）；沒有長度時長度變短，不算錯誤 | CRC 不符的 frame 被 dr_flac 跳過，之後的聲音提早，到結尾才因為長度不足回報 `DecodeError`；損毀在檔頭附近時可能一開播就回報 |
+| MP3 | 長度取自實際存在的完整 frame，不算錯誤 | 不回報。frame header 損毀時，那個 frame 在載入時就被略過（長度變短）；資料區損毀時照樣解出，聲音可能失真 |
 | WAV | 長度取自實際的資料大小，不算錯誤 | 無法偵測（PCM 沒有檢查碼） |
 
 Vorbis 檔的第一個 page 的 granule 不是 0 時（例如從直播串流剪下來的檔案），宣告長度會比實際能解出的長，串流 voice 會在播完後回報 `DecodeError`。Decode 模式的 clip 遇到資料不足會補靜音，clip 仍然是 `Loaded`。

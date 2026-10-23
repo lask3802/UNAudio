@@ -3,7 +3,7 @@ using UnityEngine;
 namespace UNAudio.Samples
 {
     /// <summary>
-    /// Play / stop / fade an imported UNAudioAsset. Assign an .ogg or .wav that was switched to
+    /// Play / stop / fade an imported UNAudioAsset. Assign an .ogg, .wav, .mp3 or .flac switched to
     /// the UNAudio importer (Assets ▸ UNAudio ▸ Import as UNAudio Asset).
     /// Uses IMGUI buttons so it runs with either input backend.
     /// </summary>

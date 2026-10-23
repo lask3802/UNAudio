@@ -1,8 +1,8 @@
 {
     "name": "com.lask3802.unaudio",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "displayName": "UNAudio - Low-Latency Native Audio",
-    "description": "Low-latency native audio engine for Unity. Plays Ogg Vorbis / WAV straight from AssetBundles (zero managed copy) with native async decoding, sample-exact scheduling and a smoothed audible-time clock. Backends: WASAPI, CoreAudio, AAudio/OpenSL ES (Oboe), ALSA.",
+    "description": "Low-latency native audio engine for Unity. Plays Ogg Vorbis / MP3 / FLAC / WAV straight from AssetBundles (zero managed copy) with native async decoding, an SSE2/NEON mixer, sample-exact scheduling and a smoothed audible-time clock. Backends: WASAPI, CoreAudio, AAudio/OpenSL ES (Oboe), ALSA.",
     "unity": "6000.0",
     "documentationUrl": "https://github.com/lask3802/UNAudio/blob/main/Documentation/GettingStarted.md",
     "changelogUrl": "https://github.com/lask3802/UNAudio/blob/main/CHANGELOG.md",
@@ -18,6 +18,8 @@
         "low-latency",
         "ogg",
         "vorbis",
+        "mp3",
+        "flac",
         "assetbundle",
         "rhythm"
     ],
@@ -33,7 +35,7 @@
         },
         {
             "displayName": "AssetBundle Loading",
-            "description": "Load Ogg audio out of an AssetBundle with native async decoding.",
+            "description": "Load Ogg / MP3 / FLAC / WAV audio out of an AssetBundle with native async decoding.",
             "path": "Samples~/AssetBundleLoading"
         },
         {

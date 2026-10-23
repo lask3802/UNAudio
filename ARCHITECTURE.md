@@ -15,7 +15,7 @@ Native engine (Native~/Source/Engine)
   服務：Services.cpp      ← DecodeService（worker pool）、StreamService（串流補資料）
   時鐘：Clock.cpp         ← DLL 平滑 + seqlock 發佈
         │
-Decode (Native~/Source/Decode)   stb_vorbis、WAV、polyphase 重取樣、downmix
+Decode (Native~/Source/Decode)   stb_vorbis、dr_mp3、dr_flac、WAV、polyphase 重取樣、downmix
 Platform (Native~/Source/Platform) WASAPI / CoreAudio / Oboe / ALSA / Null / Manual
 ```
 
@@ -69,7 +69,7 @@ Audio thread 每個 callback 都設定 flush-to-zero（SSE FTZ/DAZ、ARM FZ）�
 - int16 → float、master（gain、clip、peak）。
 - 解碼端 resampler 的內積（`simd::Dot`），兩組累加器。
 
-每個 kernel 在 `mix::scalar` 裡都有純量參考版，`test_simd.cpp` 用各種長度（含 0、奇數、非 4 倍數）和中途結束的 ramp 比對兩者；`-DUNAUDIO_SIMD=OFF` 會整個退回純量版，同一套測試也要通過。x64 上 64 voices 的實測：1:1 快約 1.8 倍，cubic 與即時重取樣快約 2.2 倍，解碼時的重取樣快約 1.7 倍。
+每個 kernel 在 `mix::scalar` 裡都有純量參考版，`test_simd.cpp` 用各種長度（含 0、奇數、非 4 倍數）和中途結束的 ramp 比對兩者；`-DUNAUDIO_SIMD=OFF` 會整個退回純量版，同一套測試也要通過。x64 上 64 voices 的實測：1:1 快 1.6–1.9 倍，cubic 與即時重取樣快約 2 倍，解碼時的重取樣快約 1.6–1.8 倍；256 voices 的立體聲 1:1 受記憶體頻寬限制，只快 1.2 倍。數字見 [效能與延遲](Documentation/PerformanceGuide.md)。
 
 沒有涵蓋：沒有 AVX 路徑（要執行期偵測，而目前的瓶頸已經不在算術）；cubic 的 tap 讀取仍是純量。ARM 上編譯器可能把純量式子合併成 FMA，兩條路徑在最後一個 bit 可能不同，所以比對測試留了 2e-6 的容差。
 
@@ -80,7 +80,7 @@ Audio thread 每個 callback 都設定 flush-to-zero（SSE FTZ/DAZ、ARM FZ）�
 做法：
 
 1. 每個 callback，backend 回報這個 buffer 第一個 frame 的 **presentNs**：它在 host 時鐘上被聽到的時刻。WASAPI 用 `IAudioClock::GetPosition` 的 QPC 位置加上 padding；CoreAudio 用 `mHostTime` 加上裝置與 stream latency；AAudio 用 `getTimestamp`（在獨立執行緒輪詢，因為它在 callback 內會上鎖）；ALSA 用 `snd_pcm_delay`。
-2. `Clock` 用二階 delay-locked loop（Adriaensen）平滑這些 (frame, presentNs) 對：settling 期間頻寬 2 Hz，之後 0.4 Hz。誤差超過 `max(8 ms, 3 個 period)` 就重新錨定並計為 discontinuity（xrun、裝置重啟）。DLL 同時量出裝置時鐘相對 host 時鐘的實際速率，追得上 ±300 ppm 的漂移。
+2. `Clock` 用二階 delay-locked loop（Adriaensen）平滑這些 (frame, presentNs) 對：settling 期間頻寬 2 Hz，之後 0.4 Hz。誤差超過 `max(8 ms, 3 個 period)` 就重新錨定並計為 discontinuity（xrun、裝置重啟）。period 取「這次 callback 的 frame 數」與「名目 period」中較大的一個，因為 legacy AAudio 啟動後會先送幾個只有 2 frames 的 callback，它們的時間戳抖動和完整 callback 一樣大，只用 callback 大小算容差，會把正常抖動誤判成 discontinuity。DLL 同時量出裝置時鐘相對 host 時鐘的實際速率，追得上 ±300 ppm 的漂移。
 3. 結果（anchor frame、anchor ns、ns/frame）用 seqlock 發佈，任何執行緒都能無鎖讀取。`AudibleNow` 在同一個 epoch 內單調，而且不會超過 mix head。
 
 每個 voice 另外記錄最近 16 段線性時間軸 `source = src0 + (dsp − dsp0) × rate`：開始、pause（rate 0）、pitch 改變、seek、loop 折返都會新增一段。查詢 voice 時間就是「把 audible dsp frame 代入對應的那一段」，所以排程中的 voice 回報負時間，暫停時停住，loop 時正確折返。
@@ -89,8 +89,19 @@ Audio thread 每個 callback 都設定 flush-to-zero（SSE FTZ/DAZ、ARM FZ）�
 
 ## 6. 解碼與記憶體
 
-- **格式**：Ogg Vorbis（stb_vorbis v1.22，已修正 residue type 2 在超過 2 聲道時被截斷的錯誤）、WAV（PCM 8/16/24/32、float 32/64、EXTENSIBLE）。
-- **Pipeline**：來源解碼（planar float）→ downmix 到 ≤ 2 聲道（依 Vorbis / WAV 聲道順序表，係數正規化避免削波）→ 重取樣到裝置取樣率。
+- **格式**：依內容判斷，不看副檔名。
+  - **Ogg Vorbis**：stb_vorbis v1.22，已修正 residue type 2 在超過 2 聲道時被截斷的錯誤。
+  - **WAV**：PCM 8/16/24/32、float 32/64、EXTENSIBLE。
+  - **MP3**：MPEG-1/2/2.5 Layer III，dr_mp3。
+    - **Gapless**：LAME／Lavf／Lavc 的 Info tag 會去掉開頭的 encoder delay 加 529 個 decoder 延遲樣本，以及結尾的 padding，結果和 ffmpeg 逐樣本一致；沒有 tag 的檔案不修剪。
+    - **Open 與 seek**：Open 只掃 frame header，建立 seek index（3 分鐘的檔案約 0.1–0.2 ms）。seek 時先重建 bit reservoir，再解前兩個 frame 重建 overlap-add 狀態，所以結果是樣本精準的。
+    - **不支援**：free-format、Layer I/II。
+  - **FLAC**：native FLAC，4–32 bit、最多 8 聲道，dr_flac。
+    - **seek**：用 SEEKTABLE 或二分搜尋。
+    - **長度**：檔頭沒寫長度時，clip 載入時整檔解一次來算；串流 voice 開自己的 decoder 時沿用這個長度（`Clip::sourceFrames`），不會在串流執行緒上再解一次。
+    - **拒絕的情況**：STREAMINFO 有長度但最後一個 frame 解不出來的檔案（截斷），以及 32-bit 立體聲（side channel 需要 33 bit）。
+  - **函式庫來源**：dr_mp3／dr_flac 釘在 mackron/dr_libs 的固定 commit。dr_flac 有一個本地 patch，讓 sample size code 7 代表 32 bit。
+- **Pipeline**：來源解碼（planar float）→ downmix 到 ≤ 2 聲道（依 Vorbis / WAV 聲道順序表，FLAC 用 WAV 順序，係數正規化避免削波）→ 重取樣到裝置取樣率。
 - **重取樣**：polyphase windowed-sinc（Kaiser β = 8，cutoff 0.92），升取樣 32 taps，降取樣按比例加長（上限 160）。輸出 frame k 對應輸入 k·M/L 以整數計算，所以 seek 是樣本精準的。放在解碼階段做，mixer 在速率相同時就能走 1:1 fast path。
 - **Clip 儲存**：int16 或 float32 interleaved，一次配置完成。`decodedFrames` 是 atomic，第一段（8192 frame）解完就進入 READY，可以邊解邊播；mixer 遇到還沒解到的位置會播靜音並計入 starved。
 - **來源記憶體**：預設在呼叫 `una_clip_load_memory` 時複製一次；`BORROW` 模式不複製，解碼完成時（串流模式則是 clip 釋放時）發 `CLIP_SOURCE_RELEASED`。
@@ -103,7 +114,7 @@ Audio thread 每個 callback 都設定 flush-to-zero（SSE FTZ/DAZ、ARM FZ）�
 - **Clip 參考**：每個 Stream 自己持有一個 clip 參考，最後一個 `shared_ptr` 消失時才放掉。stream thread 在 `Refill` 時可能握著最後一個參考，光靠 voice slot 的參考不足以保證 `clip->src` 還活著。所以串流 clip 的 `CLIP_FREED` 可能比 voice 回收晚一次 `una_update`，借用的記憶體要等到 `CLIP_FREED` 才能釋放。
 - **Seek**：控制端提高 epoch；producer 看到新 epoch 就丟棄舊 block、從新位置開始填。每個 block 帶 `streamPos`，mixer 用它對齊，遲到的資料直接跳過，所以 seek 後時間軸不會偏移。
 - **開始**：立即播放的 voice 會等 ring 有資料（primed）才開始；排程播放則準時開始，資料不足的部分播靜音並發 `VOICE_STARVED`。
-- **失敗**：clip 載入時已經 probe 過，所以 voice 自己的 decoder 開不起來，只會是借用的位元組被改掉，或記憶體不足；seek 失敗則是資料損毀（stb_vorbis seek 失敗時會回到開頭，繼續播會讓聲音和時間軸錯開）。第三種是資料在檔頭宣告的長度之前就斷掉（截斷或損毀）：`DecodePipeline` 記錄 source 已經交出的 frame 數，decoder 提早回 0 時標記 `SourceEndedEarly()`，並換算出真正資料結束的 stored frame。Decode 模式照舊補靜音，讓 clip 的長度維持不變；串流則把最後一個 block 截在那個 frame，丟掉補進去的靜音後失敗（`UNA_E_DECODE`）。這個規則的前提是每個 decoder 對正常檔案都剛好交出宣告的長度，`EveryFixtureDeliversItsDeclaredLength` 測試在原始取樣率與重取樣兩種情況下都驗證這件事。三種情況下 producer 都停止，並記錄 `una_result`（在最後一次 `head_` store 之後才設 `failed_`，所以 consumer 看到失敗時，ring 已經是最終內容）。mixer 先把失敗前已經解出的資料播完，再發 `VOICE_ERROR`（帶錯誤碼），然後在同一個 frame 發 `VOICE_ENDED`。資料可能在 render chunk 中途用完：`RenderVoice` 在 `Peek` 之前先讀失敗旗標，失敗時只播到資料結束處，並在每一輪開頭檢查 `Failed()`。因此結束點正好落在最後一個解出的 frame 之後，不會被當成 starvation，也不會為了沒發生的 loop 回繞發出 `LOOPED`。等待資料的立即播放 voice 在失敗時不會先發 `VOICE_STARTED`：mixer 先問 `Primed()` 再問 `Failed()`，因為失敗也會讓 `Primed()` 成立，而 `failed_` 只會從 false 變成 true。
+- **失敗**：clip 載入時已經 probe 過，所以 voice 自己的 decoder 開不起來，只會是借用的位元組被改掉，或記憶體不足；seek 失敗則是資料損毀（stb_vorbis seek 失敗時會回到開頭，繼續播會讓聲音和時間軸錯開）。第三種是 decoder 在 clip 載入時算出的長度之前就解不出資料（中段損毀，或借用的位元組在載入後被改掉；載入前就截斷的檔案在載入時已經失敗或得到較短的長度，各格式的差異見 API.md）：`DecodePipeline` 記錄 source 已經交出的 frame 數，decoder 提早回 0 時標記 `SourceEndedEarly()`，並換算出真正資料結束的 stored frame。Decode 模式照舊補靜音，讓 clip 的長度維持不變；串流則把最後一個 block 截在那個 frame，丟掉補進去的靜音後失敗（`UNA_E_DECODE`）。這個規則的前提是每個 decoder 對正常檔案都剛好交出宣告的長度，`EveryFixtureDeliversItsDeclaredLength` 測試在原始取樣率與重取樣兩種情況下都驗證這件事。三種情況下 producer 都停止，並記錄 `una_result`（在最後一次 `head_` store 之後才設 `failed_`，所以 consumer 看到失敗時，ring 已經是最終內容）。mixer 先把失敗前已經解出的資料播完，再發 `VOICE_ERROR`（帶錯誤碼），然後在同一個 frame 發 `VOICE_ENDED`。資料可能在 render chunk 中途用完：`RenderVoice` 在 `Peek` 之前先讀失敗旗標，失敗時只播到資料結束處，並在每一輪開頭檢查 `Failed()`。因此結束點正好落在最後一個解出的 frame 之後，不會被當成 starvation，也不會為了沒發生的 loop 回繞發出 `LOOPED`。等待資料的立即播放 voice 在失敗時不會先發 `VOICE_STARTED`：mixer 先問 `Primed()` 再問 `Failed()`，因為失敗也會讓 `Primed()` 成立，而 `failed_` 只會從 false 變成 true。
 
 ## 8. 生命週期
 
@@ -133,5 +144,6 @@ Audio thread 每個 callback 都設定 flush-to-zero（SSE FTZ/DAZ、ARM FZ）�
 - `Stop()` 返回後保證沒有 `OnRender` 正在執行。
 - `OnDeviceChanged` 只在 device 停止渲染的狀態下呼叫（Start 之前的變更延後到 Start 時通知），engine 藉此重算速率與時鐘。
 - 在 `OnRender` / `OnDeviceChanged` 裡呼叫 `Stop` / `Close` 會 deadlock，backend 不檢查。
+- `Info()` 可以在任何執行緒呼叫（backend 自己加鎖）。Oboe 在 AAudio 回報實際時間戳後會更新 `latencyFrames`，而且不經過 `OnDeviceChanged`，所以 `una_get_device_info` 每次都向 backend 取最新的延遲，不用 Init 或上次裝置變更時的快照；只有 backend 的取樣率和 engine 相同時才採用，因為 stream 重開到 `OnDeviceChanged` 之間，backend 的 frame 數是新取樣率的。C# 的 `UNAudioEngine.Device` 每幀在 `Update` 更新一次。
 
 各 backend 的驗證程度見 [平台相容性](Documentation/PlatformCompatibility.md)。

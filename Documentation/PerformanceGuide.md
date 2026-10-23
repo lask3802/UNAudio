@@ -33,23 +33,29 @@
 
 這支耳機在 exclusive 3 ms 時偶爾跟不上自己宣告的最小 period，獨立的原生 WASAPI 測試程式也能重現，屬於驅動限制。實際專案可把 `bufferFrames` 設成 2 倍最小 period 換取穩定性。
 
-**Mixer 吞吐量**（Ryzen 7 5700X3D、48 kHz、256-frame buffer，`una_bench`）：
+**CoreAudio**（Mac mini M4 內建輸出，`una_device_probe`）：64-frame buffer，輸出延遲 7.4 ms。
 
-| 情境 | 64 voices | 256 voices |
-|---|---|---|
-| 立體聲 int16，1:1 fast path | 22.9 µs / buffer（0.43%） | 90.2 µs（1.69%） |
-| 單聲道 int16，1:1 fast path | 21.6 µs（0.41%） | 83.1 µs（1.56%） |
-| 變速 pitch 1.37（cubic 內插） | 103.8 µs（1.95%） | 437.8 µs（8.21%） |
-| 44.1 kHz clip 即時重取樣 | 103.8 µs（1.95%） | 417.1 µs（7.82%） |
+**Android**：只在模擬器上跑過。模擬器不給 FAST / MMAP，走 AudioTrack 路徑（44.1 kHz、burst 882、buffer 1764，延遲 40 ms 起跳，而且隨開機時間增長），不能代表實機。實機延遲尚未量測。
 
-每個 voice 在 fast path 約 1.4 ns / frame。fast path 的條件是「clip 取樣率 = 裝置取樣率、pitch = 1、位置沒有小數」，這就是預設在解碼時重取樣的原因。
+**Mixer 吞吐量**（48 kHz、256-frame buffer，`una_bench`，每個 buffer 的混音時間與佔預算的比例）：
 
-行動裝置與 Apple 平台的數字尚未實測。
+| 情境 | Ryzen 7 5700X3D SSE2，64 voices | 同左，256 voices | 同左，純量，64 voices | Apple M4 NEON，64 voices |
+|---|---|---|---|---|
+| 立體聲 int16，1:1 fast path | 14.6 µs（0.27%） | 72.3 µs（1.36%） | 23.3 µs | 13.3 µs（0.25%） |
+| 單聲道 int16，1:1 fast path | 10.5 µs（0.20%） | 45.6 µs（0.86%） | 20.5 µs | 7.4 µs（0.14%） |
+| 變速 pitch 1.37（cubic 內插） | 50.2 µs（0.94%） | 207.8 µs（3.90%） | 103.7 µs | 22.8 µs（0.43%） |
+| 44.1 kHz clip 即時重取樣 | 51.7 µs（0.97%） | 207.7 µs（3.89%） | 100.0 µs | 19.3 µs（0.36%） |
+
+Decode 模式載入 60 秒、44.1 kHz 的 clip 並重取樣到 48 kHz：x64 SSE2 為 70–73 ms（純量 115–129 ms），M4 為 21.8 ms。
+
+每個 voice 在 x64 fast path 約 0.9 ns / frame（立體聲）。fast path 的條件是「clip 取樣率 = 裝置取樣率、pitch = 1、位置沒有小數」，這就是預設在解碼時重取樣的原因。SIMD 在 64 voices 時讓 1:1 快 1.6–1.9 倍、cubic 與即時重取樣快約 2 倍；256 voices 的立體聲 1:1 只快 1.2 倍，那裡主要受記憶體頻寬限制。
+
+Android 模擬器上的同一個 bench（64 voices）：x86_64 為 65 / 52 / 83 / 81 µs，arm64 經 ARM 轉譯為 146 / 165 / 419 / 331 µs。這兩組只反映 host CPU 與轉譯成本，不能拿來估手機的負載。
 
 ## 建議
 
 - **音效用 Decode + Int16**。解碼後播放幾乎零成本，記憶體是 `frames × 聲道 × 2 bytes`（3 秒立體聲 48 kHz 約 576 KB）。
-- **音樂用 Stream**。每個串流 voice 約 16 × 1024 frames 的 ring（立體聲 float 約 128 KB）加一個 Vorbis 解碼器，記憶體只放壓縮檔。
+- **音樂用 Stream**。每個串流 voice 約 16 × 1024 frames 的 ring（立體聲 float 約 128 KB）加一個解碼器，記憶體只放壓縮檔。四種格式的串流 seek 都是樣本精準的。
 - **在載入畫面 `await clip.WhenLoaded`**。READY 就能播，但解碼還在進行時遇到 seek 到後段，未解碼的部分會播靜音。
 - **大量載入時設 priority**，讓馬上要用的先解。
 - **不要每幀 Play 同一個音效幾十次**：voice 有上限（預設 128），滿了會回 `NoFreeVoice`。

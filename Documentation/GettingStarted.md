@@ -12,7 +12,7 @@ Debug.Log(UNAudioEngine.Device);   // 例：Wasapi 48000 Hz 2 ch, period 480 (10
 
 ## 2. 匯入音檔
 
-選取 `.ogg` 或 `.wav` → **Assets ▸ UNAudio ▸ Import as UNAudio Asset**。這是 importer override，只影響你選的檔案，其他音檔仍是 AudioClip。要改回來用 **Import as Unity AudioClip**。程式化切換：`UNAudioImporterUtility.UseUNAudio(path)`。
+選取 `.ogg`、`.wav`、`.mp3` 或 `.flac` → **Assets ▸ UNAudio ▸ Import as UNAudio Asset**。這是 importer override，只影響你選的檔案，其他音檔仍是 AudioClip（Unity 6 預設會把這四種都匯入成 AudioClip）。要改回來用 **Import as Unity AudioClip**。程式化切換：`UNAudioImporterUtility.UseUNAudio(path)`。格式依檔案內容判斷，MP3 有 LAME/Lavf Info tag 時會去掉 encoder delay 與 padding（gapless，和 ffmpeg 逐樣本一致）。
 
 Importer 設定：
 
@@ -22,10 +22,11 @@ Importer 設定：
 | Sample Format | `Int16` 記憶體減半，對遊戲音效足夠；需要後製級動態範圍才用 `Float32` |
 | Keep Source Rate | 關閉（預設）時在解碼階段重取樣到裝置取樣率，mixer 走最快路徑；開啟可省記憶體但每次播放都要即時重取樣 |
 | Priority | 同時載入很多檔案時，數字大的先解碼 |
+| Preload Audio Data | 和 AudioClip 的同名選項一樣：資產一載入（場景參照、Resources、AssetBundle），共用的 `asset.Clip` 就在下一幀開始解碼，不等第一次使用。它不會自己初始化引擎，所以從引擎初始化後的第一幀開始 |
 
 ## 3. 初始化（可選）
 
-第一次用到 clip 或 voice 時會自動以 `UNAudioEngine.DefaultConfig` 初始化。要自訂就在那之前呼叫：
+第一次用到 clip 或 voice 時會自動以 `UNAudioEngine.DefaultConfig` 初始化。勾了 Preload Audio Data 的資產會等到引擎初始化後才開始解碼，所以要讓它們在載入畫面就開始，就在啟動流程明確初始化。要自訂設定就在第一次使用之前呼叫：
 
 ```csharp
 UNAudioEngine.Initialize(new UNAudioConfig
@@ -64,7 +65,8 @@ Coroutine 版本：`yield return clip.WaitUntilReady();`
 
 ```csharp
 await UNAudioAssetBundles.LoadClipAsync(bundle, "explosion");   // UNAudioAsset 或 .bytes TextAsset
-UNAudioClip.Load(textAsset);                                     // 任何含 OGG/WAV 的 TextAsset
+await UNAudioAssetBundles.PreloadAsync(bundle);                  // bundle 裡所有 UNAudioAsset 的共用 clip
+UNAudioClip.Load(textAsset);                                     // 任何含 OGG/WAV/MP3/FLAC 的 TextAsset
 UNAudioClip.Load(nativeArray);                                   // 例如 UnityWebRequest 下載的資料
 UNAudioClip.Load(bytes);                                         // managed byte[]
 UNAudioClip.LoadFile(path);                                      // native worker 讀檔
@@ -104,11 +106,23 @@ UNAudioEngine.VoiceStarted += (voice, dspFrame) => { };
 UNAudioEngine.VoiceEnded   += (voice, dspFrame) => { };
 UNAudioEngine.VoiceLooped  += (voice, dspFrame) => { };
 UNAudioEngine.VoiceStarved += (voice, frames) => { };     // 解碼或串流跟不上
+UNAudioEngine.VoiceError   += (voice, error) => { };      // 串流解碼失敗，之後接著 VoiceEnded
 UNAudioEngine.DeviceChanged += sampleRate => { };
 clip.Ready += c => { }; clip.Loaded += c => { }; clip.Failed += c => { };
 ```
 
 都在主執行緒、`EarlyUpdate` 開頭觸發。
+
+串流 voice 失敗時（借用的記憶體被改掉、seek 失敗、資料中段損毀），已經解出的部分會先播完，然後觸發 `VoiceError`，帶 `UNAudioResult`（`UnsupportedFormat`、`DecodeError`、`OutOfMemory`），同一個 dsp frame 接著 `VoiceEnded`。事後也能從 voice 查：
+
+```csharp
+UNAudioEngine.VoiceEnded += (voice, dsp) =>
+{
+    if (voice.Error != UNAudioResult.Ok) Debug.LogWarning($"stream stopped: {voice.Error}");
+};
+```
+
+`UNAudioPlayer` 元件把同樣的資訊放在 `LastError` 與 `Error` 事件。載入前就截斷的檔案不會觸發 `VoiceError`：clip 載入失敗，或長度變短、照常播完；能偵測到哪些損毀依格式而定，見 [API 參考](API.md)。
 
 ## 9. 測試與離線渲染
 
