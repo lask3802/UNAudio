@@ -13,7 +13,7 @@ namespace UNAudio.Editor
     /// Assets ▸ UNAudio ▸ Import as UNAudio Asset, or in code with
     /// <see cref="UNAudioImporterUtility.UseUNAudio(string)"/>.
     /// </summary>
-    [ScriptedImporter(2, null, new[] { "ogg", "wav" })]
+    [ScriptedImporter(3, null, new[] { "ogg", "wav" })]
     public sealed class UNAudioImporter : ScriptedImporter
     {
         [Tooltip("Decode: whole clip to PCM in the background (sound effects). Stream: decode while playing (music).")]
@@ -24,6 +24,9 @@ namespace UNAudio.Editor
         public bool keepSourceRate;
         [Tooltip("Higher loads first when many clips decode at once.")]
         public int priority;
+        [Tooltip("Start loading when the asset is loaded (scene, Resources, AssetBundle) instead of on first use, " +
+                 "like AudioClip's Preload Audio Data.")]
+        public bool preloadAudioData;
 
         public override void OnImportAsset(AssetImportContext ctx)
         {
@@ -52,7 +55,7 @@ namespace UNAudio.Editor
                 keepSourceRate = keepSourceRate,
                 priority = priority,
             };
-            asset.EditorSetup(data, options, info, format);
+            asset.EditorSetup(data, options, preloadAudioData, info, format);
 
             ctx.AddObjectToAsset("data", data);
             ctx.AddObjectToAsset("main", asset, EditorGUIUtility.IconContent("AudioClip Icon").image as Texture2D);

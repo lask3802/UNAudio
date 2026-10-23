@@ -47,6 +47,8 @@ public:
     }
     /// Decoding failed and every frame produced before the failure has been played.
     bool Failed();
+    /// una_result describing the failure (valid once Failed()).
+    int Error() const { return error_.load(std::memory_order_acquire); }
     /// Clip frame at the consumer cursor, or -1 when the ring has no data there yet.
     /// The mixer compares it with the voice position to detect a ring laid out for
     /// other loop settings (see Mixer.cpp).
@@ -69,6 +71,7 @@ public:
 private:
     void SkipStale();
     bool SeekTo(int64_t frame);
+    void Fail(int error);
 
     // Holds a clip reference for the stream's whole lifetime. The last owner of the
     // stream may be the stream thread mid-Refill, so the voice slot's own reference
@@ -113,6 +116,7 @@ private:
     std::atomic<uint32_t> primedEpoch_{0};  // last epoch with data or an end
     std::atomic<uint32_t> endEpoch_{0};     // last epoch the producer finished
     std::atomic<bool> failed_{false};
+    std::atomic<int32_t> error_{0};         // written before failed_ is set
 };
 
 } // namespace una

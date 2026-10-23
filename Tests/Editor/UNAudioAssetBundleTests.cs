@@ -95,6 +95,30 @@ namespace UNAudio.Tests
         }
 
         [UnityTest]
+        public IEnumerator PreloadAsyncStartsEveryAssetInTheBundle()
+        {
+            StartManual();
+            var task = UNAudioAssetBundles.PreloadAsync(m_Bundle);
+            yield return Wait(() => task.IsCompleted);
+            Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
+            var assets = task.Result;
+            Assert.AreEqual(1, assets.Length);
+            var asset = assets[0];
+            Assert.IsTrue(asset.IsClipLoaded);
+            Assert.IsTrue(asset.Clip.IsReady);
+
+            // Play() uses the preloaded shared clip; no new load starts.
+            var shared = asset.Clip;
+            var voice = asset.Play(UNAudioPlayParams.At(256));
+            Assert.AreSame(shared, asset.Clip);
+            float[] o = Render(256 + 4800);
+            Assert.Greater(Rms(o, 0, 256, 256 + 4800), 0.05);
+            voice.Stop();
+            asset.Unload();
+            Assert.IsFalse(asset.IsClipLoaded);
+        }
+
+        [UnityTest]
         public IEnumerator CopiedClipSurvivesBundleUnload()
         {
             StartManual();

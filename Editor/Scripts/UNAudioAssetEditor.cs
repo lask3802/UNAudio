@@ -21,6 +21,7 @@ namespace UNAudio.Editor
                 EditorGUILayout.TextField("Length", $"{a.Length:F3} s");
                 EditorGUILayout.TextField("File Size", a.Data != null ? EditorUtility.FormatBytes(a.Data.dataSize) : "-");
                 EditorGUILayout.EnumPopup("Load Mode", a.LoadOptions.mode);
+                EditorGUILayout.Toggle("Preload Audio Data", a.PreloadAudioData);
                 if (a.LoadOptions.mode == UNAudioLoadMode.Decode)
                 {
                     EditorGUILayout.EnumPopup("Sample Format", a.LoadOptions.sampleFormat);

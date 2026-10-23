@@ -25,8 +25,16 @@ Stream::Stream(Clip* clip, int targetRate, int64_t startFrame, bool loop, int64_
 bool Stream::Refill() {
     if (failed_.load(std::memory_order_relaxed)) return false;
     if (!opened_) {
-        if (pipe_.Open(clip_->src, clip_->srcSize, targetRate_) != UNA_OK) {
-            failed_.store(true, std::memory_order_release);
+        // The clip was probed when it loaded, so this fails only if the bytes changed since
+        // (borrowed memory) or memory ran out; this runs on the stream thread, never throw.
+        int rc;
+        try {
+            rc = pipe_.Open(clip_->src, clip_->srcSize, targetRate_);
+        } catch (...) {
+            rc = UNA_E_OUT_OF_MEMORY;
+        }
+        if (rc != UNA_OK) {
+            Fail(rc);
             return false;
         }
         opened_ = true;
@@ -104,12 +112,18 @@ bool Stream::SeekTo(int64_t frame) {
     // playing on would put audio and the voice position out of step, so stop instead.
     if (!pipe_.Seek(frame)) {
         prodEnd_ = true;
-        failed_.store(true, std::memory_order_release);
-        primedEpoch_.store(prodEpoch_, std::memory_order_release);
+        Fail(UNA_E_DECODE);
         return false;
     }
     prodPos_ = pipe_.Position();
     return true;
+}
+
+void Stream::Fail(int error) {
+    error_.store(error, std::memory_order_relaxed);
+    failed_.store(true, std::memory_order_release);
+    // A voice waiting for data must wake up to see the failure.
+    primedEpoch_.store(prodEpoch_, std::memory_order_release);
 }
 
 void Stream::SkipStale() {

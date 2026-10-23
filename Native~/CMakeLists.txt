@@ -25,6 +25,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(UNAUDIO_BUILD_TESTS "Build native unit tests" OFF)
+option(UNAUDIO_SIMD "SSE2 / NEON mixer and resampler kernels (OFF = scalar fallback)" ON)
 option(UNAUDIO_FETCH_OBOE "Android: fetch Oboe with FetchContent" ON)
 set(UNAUDIO_OBOE_DIR "" CACHE PATH "Android: local Oboe checkout (overrides fetch)")
 
@@ -42,6 +43,7 @@ set(UNA_CORE_SOURCES
     Source/Engine/Services.cpp
     Source/Engine/Engine.cpp
     Source/Engine/Mixer.cpp
+    Source/Engine/MixKernels.cpp
     Source/Platform/NullDevice.cpp
 )
 
@@ -62,6 +64,9 @@ set(UNA_API_SOURCES Source/Engine/Api.cpp)
 add_library(unaudio_core STATIC ${UNA_CORE_SOURCES})
 target_include_directories(unaudio_core PUBLIC Include Source)
 target_compile_definitions(unaudio_core PUBLIC UNAUDIO_BUILDING)
+if(NOT UNAUDIO_SIMD)
+    target_compile_definitions(unaudio_core PUBLIC UNA_NO_SIMD)
+endif()
 set_target_properties(unaudio_core PROPERTIES
     C_VISIBILITY_PRESET hidden
     CXX_VISIBILITY_PRESET hidden
@@ -159,6 +164,8 @@ if(UNAUDIO_BUILD_TESTS)
         Tests/test_stream.cpp
         Tests/test_stress.cpp
         Tests/test_regressions.cpp
+        Tests/test_simd.cpp
+        Tests/test_stream_errors.cpp
         ${UNA_API_SOURCES})
     target_link_libraries(UNAudioTests PRIVATE unaudio_core GTest::gtest)
     target_compile_definitions(UNAudioTests PRIVATE

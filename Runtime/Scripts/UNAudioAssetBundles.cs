@@ -40,6 +40,22 @@ namespace UNAudio
             }
         }
 
+        /// <summary>
+        /// Loads every <see cref="UNAudioAsset"/> in the bundle and starts their shared clips
+        /// (<see cref="UNAudioAsset.Clip"/>), e.g. during a loading screen. Completes when all of
+        /// them are playable; a clip that fails to load faults the task (the others stay loaded).
+        /// The clips are released when the assets unload, or with <see cref="UNAudioAsset.Unload"/>.
+        /// </summary>
+        public static async Task<UNAudioAsset[]> PreloadAsync(AssetBundle bundle)
+        {
+            if (bundle == null) throw new ArgumentNullException(nameof(bundle));
+            var assets = await LoadAllAsync(bundle);
+            var ready = new Task<UNAudioClip>[assets.Length];
+            for (int i = 0; i < assets.Length; i++) ready[i] = assets[i].LoadAsync();
+            await Task.WhenAll(ready);
+            return assets;
+        }
+
         /// <summary>Synchronous variant: loads the asset now; decoding still runs in the background.</summary>
         public static UNAudioClip LoadClip(AssetBundle bundle, string assetName, UNAudioLoadOptions? options = null)
         {
@@ -49,6 +65,27 @@ namespace UNAudio
             var t = bundle.LoadAsset<TextAsset>(assetName);
             if (t != null) return UNAudioClip.Load(t, options ?? UNAudioLoadOptions.Default);
             throw new UNAudioException(UNAudioResult.InvalidArgument, $"'{assetName}' not found in bundle '{bundle.name}'");
+        }
+
+        static Task<UNAudioAsset[]> LoadAllAsync(AssetBundle bundle)
+        {
+            var tcs = new TaskCompletionSource<UNAudioAsset[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var request = bundle.LoadAllAssetsAsync<UNAudioAsset>();
+            request.completed += _ =>
+            {
+                try
+                {
+                    var all = request.allAssets;
+                    var assets = new UNAudioAsset[all.Length];
+                    for (int i = 0; i < all.Length; i++) assets[i] = (UNAudioAsset)all[i];
+                    tcs.TrySetResult(assets);
+                }
+                catch (Exception e)
+                {
+                    tcs.TrySetException(e);
+                }
+            };
+            return tcs.Task;
         }
 
         static Task<UnityEngine.Object> LoadAssetAsync(AssetBundle bundle, string assetName)

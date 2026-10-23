@@ -1,5 +1,7 @@
 #include "Resampler.h"
 
+#include "../Core/Simd.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -164,12 +166,7 @@ int Resampler::Produce(float* const* out, int maxFrames) {
         if (ipos + half_ >= have) break;
         const float* h = PhaseCoefs(phase, lerpScratch_.data());
         const size_t idx = static_cast<size_t>(first - fifoStart_);
-        for (int c = 0; c < channels_; ++c) {
-            const float* x = fifo_[c].data() + idx;
-            float acc = 0.0f;
-            for (int j = 0; j < taps_; ++j) acc += h[j] * x[j];
-            out[c][n] = acc;
-        }
+        for (int c = 0; c < channels_; ++c) out[c][n] = simd::Dot(h, fifo_[c].data() + idx, taps_);
         ++outPos_;
         ++n;
     }

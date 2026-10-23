@@ -25,8 +25,15 @@ namespace UNAudio
         public UNAudioVoice Voice => m_Voice;
         public bool IsPlaying => m_Voice.IsAlive;
 
+        /// <summary>The clip failed to load or the voice failed to decode (streaming).</summary>
+        public event System.Action<UNAudioPlayer, UNAudioResult> Error;
+
+        /// <summary>Last load or decode error since <see cref="Play"/>, or <see cref="UNAudioResult.Ok"/>.</summary>
+        public UNAudioResult LastError { get; private set; }
+
         void OnEnable()
         {
+            UNAudioEngine.VoiceError += OnVoiceError;
             if (m_Asset == null) return;
             m_Asset.LoadAsync();  // start decoding early
             if (m_PlayOnEnable) Play();
@@ -34,8 +41,22 @@ namespace UNAudio
 
         void OnDisable()
         {
+            UNAudioEngine.VoiceError -= OnVoiceError;
             m_PendingPlay = false;
             Stop(m_FadeOutOnDisable);
+        }
+
+        void OnVoiceError(UNAudioVoice voice, UNAudioResult error)
+        {
+            if (voice != m_Voice) return;
+            ReportError(error, "failed while playing");
+        }
+
+        void ReportError(UNAudioResult error, string what)
+        {
+            LastError = error;
+            Debug.LogError($"[UNAudio] '{(m_Asset != null ? m_Asset.name : name)}' {what}: {error}", this);
+            Error?.Invoke(this, error);
         }
 
         void Update()
@@ -50,7 +71,7 @@ namespace UNAudio
             else if (clip.IsFailed)
             {
                 m_PendingPlay = false;
-                Debug.LogError($"[UNAudio] '{m_Asset.name}' failed to load: {clip.Info.Error}", this);
+                ReportError(clip.Info.Error, "failed to load");
             }
         }
 
@@ -59,6 +80,7 @@ namespace UNAudio
         {
             if (m_Asset == null) return;
             Stop();
+            LastError = UNAudioResult.Ok;
             if (m_Asset.Clip.IsReady) StartVoice();
             else m_PendingPlay = true;
         }

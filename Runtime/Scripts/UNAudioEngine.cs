@@ -26,6 +26,11 @@ namespace UNAudio
         public static event Action<UNAudioVoice, long> VoiceLooped;
         /// <summary>A voice ran out of decoded data and played silence (value = frames).</summary>
         public static event Action<UNAudioVoice, long> VoiceStarved;
+        /// <summary>
+        /// A streaming voice could not decode its data and stopped (<see cref="VoiceEnded"/> follows).
+        /// The error is also kept on the voice: <see cref="UNAudioVoice.Error"/>.
+        /// </summary>
+        public static event Action<UNAudioVoice, UNAudioResult> VoiceError;
         /// <summary>The output device changed; the argument is the new sample rate.</summary>
         public static event Action<int> DeviceChanged;
         /// <summary>Raised after <see cref="Shutdown"/>; every clip and voice handle is now invalid.</summary>
@@ -45,6 +50,10 @@ namespace UNAudio
         static UNAudioDeviceInfo s_Device;
         static readonly una_event[] s_Events = new una_event[256];
         internal static readonly Dictionary<uint, UNAudioClip> LiveClips = new Dictionary<uint, UNAudioClip>();
+        // Errors of recently failed voices (this session), oldest dropped first.
+        const int k_MaxVoiceErrors = 256;
+        static readonly Dictionary<uint, UNAudioResult> s_VoiceErrors = new Dictionary<uint, UNAudioResult>();
+        static readonly Queue<uint> s_VoiceErrorOrder = new Queue<uint>();
 
         public static bool IsInitialized => s_Initialized;
 
@@ -133,6 +142,8 @@ namespace UNAudio
             var clips = new UNAudioClip[LiveClips.Count];
             LiveClips.Values.CopyTo(clips, 0);
             LiveClips.Clear();
+            s_VoiceErrors.Clear();
+            s_VoiceErrorOrder.Clear();
             foreach (var clip in clips) clip.OnEngineShutdown();
             ShutdownCompleted?.Invoke();
         }
@@ -160,6 +171,10 @@ namespace UNAudio
 
         internal static void CaptureMainThread() => s_MainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
 
+        /// <summary>False when the main thread is not known yet (very early startup).</summary>
+        internal static bool IsMainThread =>
+            s_MainThreadId != 0 && System.Threading.Thread.CurrentThread.ManagedThreadId == s_MainThreadId;
+
         /// <summary>
         /// Drops state left from a previous play session (enter play mode without a domain
         /// reload keeps statics, including handlers on destroyed objects and a remembered
@@ -172,6 +187,7 @@ namespace UNAudio
             VoiceEnded = null;
             VoiceLooped = null;
             VoiceStarved = null;
+            VoiceError = null;
             DeviceChanged = null;
             ShutdownCompleted = null;
         }
@@ -183,6 +199,7 @@ namespace UNAudio
         /// </summary>
         public static void Update()
         {
+            if (UNAudioPreloader.HasWaiting) UNAudioPreloader.Flush();
             if (!s_Initialized) return;
             UNAudioClock.Refresh();
             UNAudioNative.una_update();
@@ -231,6 +248,11 @@ namespace UNAudio
                 case 11: VoiceEnded?.Invoke(new UNAudioVoice(e.handle), e.dsp_frame); break;
                 case 12: VoiceLooped?.Invoke(new UNAudioVoice(e.handle), e.dsp_frame); break;
                 case 13: VoiceStarved?.Invoke(new UNAudioVoice(e.handle), e.value); break;
+                case 14: // VOICE_ERROR
+                    var error = (UNAudioResult)(int)e.value;
+                    RecordVoiceError(e.handle, error);
+                    VoiceError?.Invoke(new UNAudioVoice(e.handle), error);
+                    break;
                 case 20:
                     una_device_info info;
                     UNAudioNative.una_get_device_info(&info);
@@ -239,6 +261,19 @@ namespace UNAudio
                     break;
             }
         }
+
+        static void RecordVoiceError(uint handle, UNAudioResult error)
+        {
+            if (!s_VoiceErrors.ContainsKey(handle))
+            {
+                if (s_VoiceErrorOrder.Count >= k_MaxVoiceErrors) s_VoiceErrors.Remove(s_VoiceErrorOrder.Dequeue());
+                s_VoiceErrorOrder.Enqueue(handle);
+            }
+            s_VoiceErrors[handle] = error;
+        }
+
+        internal static UNAudioResult VoiceErrorOf(uint handle) =>
+            s_VoiceErrors.TryGetValue(handle, out var r) ? r : UNAudioResult.Ok;
 
         // ── Mix ──────────────────────────────────────────────────────
 

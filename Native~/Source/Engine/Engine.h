@@ -290,6 +290,8 @@ private:
     bool CanFade(const VoiceRT& v) const { return v.started && !v.paused && !buses_[v.bus].paused; }
     void StartVoice(VoiceSlot& slot, int slotIndex, int64_t dsp, int64_t lateFrames);
     void EndVoice(VoiceSlot& slot, int slotIndex, int64_t dsp);
+    /// Stream voice that cannot decode: VOICE_ERROR, then VOICE_ENDED.
+    void FailVoice(VoiceSlot& slot, int slotIndex, int64_t dsp);
     void UpdateStep(VoiceRT& v);
     double SourcePos(const VoiceRT& v) const;
     void PushAudioEvent(int type, uint32_t handle, int64_t dsp, int64_t value);

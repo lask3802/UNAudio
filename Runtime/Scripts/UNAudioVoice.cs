@@ -138,6 +138,14 @@ namespace UNAudio
 
         public bool IsPlaying => State == UNAudioVoiceState.Playing;
 
+        /// <summary>
+        /// Why the voice stopped early, or <see cref="UNAudioResult.Ok"/>. Set for streaming voices
+        /// that could not decode, from the event dispatch after the failure (same frame as
+        /// <see cref="UNAudioEngine.VoiceError"/>). Main thread only.
+        /// </summary>
+        public UNAudioResult Error =>
+            Handle != 0 && Session == UNAudioEngine.Session ? UNAudioEngine.VoiceErrorOf(Handle) : UNAudioResult.Ok;
+
         /// <summary>Clip time (seconds) reaching the speaker right now. Smooth and monotonic while playing.</summary>
         public double Time => GetTiming().AudibleSeconds;
 

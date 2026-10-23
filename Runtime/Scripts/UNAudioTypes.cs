@@ -19,6 +19,8 @@ namespace UNAudio
         IOError = -11,
         TooManyClips = -12,
         AbiMismatch = -13,
+        /// <summary>Data failed to decode or seek after a successful open (corrupt stream, borrowed bytes changed).</summary>
+        DecodeError = -14,
     }
 
     public enum UNAudioDeviceType

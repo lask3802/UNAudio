@@ -7,6 +7,7 @@
 // frame regardless of buffer size.
 
 #include "Engine.h"
+#include "MixKernels.h"
 
 #include <algorithm>
 #include <cmath>
@@ -24,51 +25,6 @@ inline float PanR(float p) { return p < 0.0f ? 1.0f + p : 1.0f; }
 
 inline bool CmdLess(const Cmd& a, const Cmd& b) {
     return a.dsp < b.dsp || (a.dsp == b.dsp && a.seq < b.seq);
-}
-
-/// src[0] is the frame before the play position; src[CH..] starts at it.
-/// Writes `n` stereo frames into out with a linear gain ramp.
-template <int CH, bool INTERP>
-void MixKernel(const float* src, uint32_t frac, uint64_t step, int n, float* out,
-               float l0, float r0, float dl, float dr) {
-    if (!INTERP) {
-        const float* s = src + CH;
-        for (int i = 0; i < n; ++i) {
-            const float gl = l0 + dl * static_cast<float>(i);
-            const float gr = r0 + dr * static_cast<float>(i);
-            if (CH == 1) {
-                const float v = s[i];
-                out[2 * i] += v * gl;
-                out[2 * i + 1] += v * gr;
-            } else {
-                out[2 * i] += s[2 * i] * gl;
-                out[2 * i + 1] += s[2 * i + 1] * gr;
-            }
-        }
-        return;
-    }
-    uint64_t x = frac;
-    for (int i = 0; i < n; ++i, x += step) {
-        const size_t k = static_cast<size_t>(x >> 32);
-        const float t = static_cast<float>(static_cast<double>(x & 0xFFFFFFFFu) * kInvOne);
-        const float* p = src + k * CH;
-        const float gl = l0 + dl * static_cast<float>(i);
-        const float gr = r0 + dr * static_cast<float>(i);
-        float v[CH];
-        for (int c = 0; c < CH; ++c) {
-            // Catmull-Rom cubic between p[1] and p[2].
-            const float y0 = p[c], y1 = p[CH + c], y2 = p[2 * CH + c], y3 = p[3 * CH + c];
-            v[c] = y1 + 0.5f * t * (y2 - y0 + t * (2.0f * y0 - 5.0f * y1 + 4.0f * y2 - y3 +
-                                                   t * (3.0f * (y1 - y2) + y3 - y0)));
-        }
-        if (CH == 1) {
-            out[2 * i] += v[0] * gl;
-            out[2 * i + 1] += v[0] * gr;
-        } else {
-            out[2 * i] += v[0] * gl;
-            out[2 * i + 1] += v[CH - 1] * gr;
-        }
-    }
 }
 
 } // namespace
@@ -127,24 +83,22 @@ void Engine::ProcessBlock(float* out, int n, int channels) {
         if (offset >= n) break;
     }
 
-    // Master gain, clip, channel mapping, metering.
-    const float* m = mix_.data();
+    // Master gain, clip and metering; stereo devices are written directly, other
+    // layouts are processed in place and mapped afterwards.
+    float* m = mix_.data();
     float pkL = 0.0f, pkR = 0.0f;
-    for (int i = 0; i < n; ++i) {
-        const float g = i < master_.left ? master_.value + master_.inc * static_cast<float>(i) : master_.target;
-        float l = m[2 * i] * g;
-        float r = m[2 * i + 1] * g;
-        l = l > 1.0f ? 1.0f : (l < -1.0f ? -1.0f : l);
-        r = r > 1.0f ? 1.0f : (r < -1.0f ? -1.0f : r);
-        pkL = std::max(pkL, std::fabs(l));
-        pkR = std::max(pkR, std::fabs(r));
-        float* o = out + static_cast<size_t>(i) * channels;
-        if (channels == 1) {
-            o[0] = 0.5f * (l + r);
-        } else {
-            o[0] = l;
-            o[1] = r;
-            for (int c = 2; c < channels; ++c) o[c] = 0.0f;
+    mix::Master(m, channels == 2 ? out : m, n, master_.value, master_.inc, master_.left, master_.target, pkL, pkR);
+    if (channels != 2) {
+        for (int i = 0; i < n; ++i) {
+            const float l = m[2 * i], r = m[2 * i + 1];
+            float* o = out + static_cast<size_t>(i) * channels;
+            if (channels == 1) {
+                o[0] = 0.5f * (l + r);
+            } else {
+                o[0] = l;
+                o[1] = r;
+                for (int c = 2; c < channels; ++c) o[c] = 0.0f;
+            }
         }
     }
     master_.Advance(n);
@@ -266,7 +220,8 @@ void Engine::ApplyCmd(const Cmd& c, int64_t dsp) {
                 st.dsp = start;
                 st.seq = c.seq;
                 HeapPush(st);
-            } else if (v.waitPrime && !v.stream->Primed()) {
+            } else if (v.waitPrime && (!v.stream->Primed() || v.stream->Failed())) {
+                // Still waiting, or failed before producing anything: MixRange reports it.
                 ReleaseHeapSlot(c);
                 s->timing.Reset(dsp, static_cast<double>(v.pos), nominal);
             } else {
@@ -473,6 +428,11 @@ void Engine::EndVoice(VoiceSlot& s, int slotIndex, int64_t dsp) {
     PushAudioEvent(UNA_EVENT_VOICE_ENDED, VoiceHandle(slotIndex, v.gen), dsp, 0);
 }
 
+void Engine::FailVoice(VoiceSlot& s, int slotIndex, int64_t dsp) {
+    PushAudioEvent(UNA_EVENT_VOICE_ERROR, VoiceHandle(slotIndex, s.rt.gen), dsp, s.rt.stream->Error());
+    EndVoice(s, slotIndex, dsp);
+}
+
 void Engine::FlushEnded() {
     if (!anyEnded_) return;
     anyEnded_ = false;
@@ -512,12 +472,18 @@ void Engine::MixRange(int offset, int frames, int64_t dsp) {
         VoiceRT& v = s.rt;
         if (!v.active) continue;
         if (v.stream && v.stream->Failed()) {
-            EndVoice(s, idx, dsp);
+            FailVoice(s, idx, dsp);
             continue;
         }
         if (!v.started) {
-            if (v.waitPrime && v.stream->Primed()) StartVoice(s, idx, dsp, 0);
-            else continue;
+            if (!v.waitPrime || !v.stream->Primed()) continue;
+            // Primed() also turns true when the stream fails; checked in this order, a
+            // failure that made it true is visible to Failed() too.
+            if (v.stream->Failed()) {
+                FailVoice(s, idx, dsp);
+                continue;
+            }
+            StartVoice(s, idx, dsp, 0);
         }
         if (v.paused || buses_[v.bus].paused) continue;
         RenderVoice(s, idx, mix, frames, dsp);
@@ -557,9 +523,7 @@ void Engine::FetchDecoded(const VoiceRT& v, int64_t start, int count, float* dst
             if (v.sampleFormat == UNA_SAMPLE_FLOAT32) {
                 std::memcpy(d, static_cast<const float*>(v.pcm) + static_cast<size_t>(p) * ch, samples * sizeof(float));
             } else {
-                const int16_t* s = static_cast<const int16_t*>(v.pcm) + static_cast<size_t>(p) * ch;
-                constexpr float k = 1.0f / 32768.0f;
-                for (size_t j = 0; j < samples; ++j) d[j] = static_cast<float>(s[j]) * k;
+                mix::Int16ToFloat(static_cast<const int16_t*>(v.pcm) + static_cast<size_t>(p) * ch, d, samples);
             }
         }
         if (have < run)
@@ -646,13 +610,14 @@ void Engine::RenderVoice(VoiceSlot& s, int slotIndex, float* out, int n, int64_t
         const float dl = (l1 - l0) * inv, dr = (r1 - r0) * inv;
         float* o = out + static_cast<size_t>(done) * 2;
 
+        // st[0..ch) is the frame before the play position (cubic history); 1:1 starts after it.
         const bool exact = v.step == kOne && v.frac == 0;
         if (ch == 1) {
-            if (exact) MixKernel<1, false>(st, v.frac, v.step, chunk, o, l0, r0, dl, dr);
-            else MixKernel<1, true>(st, v.frac, v.step, chunk, o, l0, r0, dl, dr);
+            if (exact) mix::Mono(st + 1, chunk, o, l0, r0, dl, dr);
+            else mix::MonoCubic(st, v.frac, v.step, chunk, o, l0, r0, dl, dr);
         } else {
-            if (exact) MixKernel<2, false>(st, v.frac, v.step, chunk, o, l0, r0, dl, dr);
-            else MixKernel<2, true>(st, v.frac, v.step, chunk, o, l0, r0, dl, dr);
+            if (exact) mix::Stereo(st + 2, chunk, o, l0, r0, dl, dr);
+            else mix::StereoCubic(st, v.frac, v.step, chunk, o, l0, r0, dl, dr);
         }
 
         // Staging frame `consumed` is the frame just before the new position.

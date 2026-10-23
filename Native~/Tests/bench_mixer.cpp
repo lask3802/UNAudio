@@ -3,6 +3,7 @@
 // Prints render time per buffer and the real-time factor for several voice mixes.
 
 #include "unaudio.h"
+#include "Engine/MixKernels.h"
 
 #include <chrono>
 #include <cmath>
@@ -106,10 +107,24 @@ int main(int argc, char** argv) {
     while (una_clip_get_info(co, &info), info.state != UNA_CLIP_LOADED)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
+    std::printf("kernels: %s\n", una::mix::IsaName());
     Run("stereo int16, 1:1 fast path", voices, seconds, buffer, 1.0f, cs);
     Run("mono int16, 1:1 fast path", voices, seconds, buffer, 1.0f, cm);
     Run("stereo, pitch 1.37 (cubic)", voices, seconds, buffer, 1.37f, cs);
     Run("44.1k stereo live resample", voices, seconds, buffer, 1.0f, co);
+
+    // Worker-side cost: decode 60 s of 44.1 kHz stereo with resampling to 48 kHz.
+    auto long441 = MakeWav(44100, 2, 44100 * 60);
+    una_clip_params dp{};
+    dp.struct_size = sizeof(dp);
+    const auto d0 = std::chrono::steady_clock::now();
+    una_clip cd = 0;
+    una_clip_load_memory(long441.data(), int64_t(long441.size()), &dp, &cd);
+    while (una_clip_get_info(cd, &info), info.state != UNA_CLIP_LOADED && info.state != UNA_CLIP_FAILED)
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    const double ds = std::chrono::duration<double>(std::chrono::steady_clock::now() - d0).count();
+    std::printf("%-28s 60 s of audio in %.1f ms (%.0fx real time)\n", "decode 44.1k->48k resample", ds * 1e3,
+                60.0 / ds);
     una_shutdown();
     return 0;
 }

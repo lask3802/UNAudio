@@ -63,7 +63,9 @@ typedef enum una_result {
     UNA_E_NOT_READY           = -10,
     UNA_E_IO                  = -11,
     UNA_E_TOO_MANY_CLIPS      = -12,
-    UNA_E_ABI_MISMATCH        = -13
+    UNA_E_ABI_MISMATCH        = -13,
+    UNA_E_DECODE              = -14  /* data failed to decode or seek after a successful
+                                        open (corrupt stream, borrowed bytes changed) */
 } una_result;
 
 /* ── Engine ──────────────────────────────────────────────────────── */
@@ -302,6 +304,9 @@ typedef enum una_event_type {
     UNA_EVENT_VOICE_ENDED          = 11, /* dsp_frame = exact end frame       */
     UNA_EVENT_VOICE_LOOPED         = 12,
     UNA_EVENT_VOICE_STARVED        = 13, /* value = frames of silence inserted */
+    UNA_EVENT_VOICE_ERROR          = 14, /* value = una_result; a stream voice could
+                                            not decode. VOICE_ENDED follows at the
+                                            same dsp_frame                        */
     UNA_EVENT_DEVICE_CHANGED       = 20, /* value = new sample rate           */
     UNA_EVENT_DEVICE_LOST          = 21
 } una_event_type;
