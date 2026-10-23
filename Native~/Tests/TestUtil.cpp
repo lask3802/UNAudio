@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -30,7 +31,9 @@ std::vector<uint8_t> WavHeader(int rate, int channels, int bits, int tag, uint32
 } // namespace
 
 std::vector<uint8_t> ReadFixture(const std::string& name) {
-    const std::string path = std::string(UNA_TEST_FIXTURES) + "/" + name;
+    // On a device or simulator the build-time source path does not exist.
+    const char* dir = std::getenv("UNA_TEST_FIXTURES_DIR");
+    const std::string path = std::string(dir && *dir ? dir : UNA_TEST_FIXTURES) + "/" + name;
     std::vector<uint8_t> data;
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) return data;

@@ -132,7 +132,9 @@ endif()
 
 # ── Tests ────────────────────────────────────────────────────────
 
-if(UNAUDIO_BUILD_TESTS AND NOT UNA_APPLE_MOBILE AND NOT ANDROID)
+# Mobile targets build the same executables; run them on a device or simulator
+# (adb push / simctl spawn) with UNA_TEST_FIXTURES_DIR pointing at a copy of Tests/fixtures.
+if(UNAUDIO_BUILD_TESTS)
     enable_testing()
     find_package(GTest CONFIG QUIET)
     if(NOT GTest_FOUND)
@@ -161,12 +163,14 @@ if(UNAUDIO_BUILD_TESTS AND NOT UNA_APPLE_MOBILE AND NOT ANDROID)
     target_link_libraries(UNAudioTests PRIVATE unaudio_core GTest::gtest)
     target_compile_definitions(UNAudioTests PRIVATE
         UNA_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/Tests/fixtures")
-    include(GoogleTest)
-    gtest_discover_tests(UNAudioTests DISCOVERY_TIMEOUT 60)
+    if(NOT CMAKE_CROSSCOMPILING)
+        include(GoogleTest)
+        gtest_discover_tests(UNAudioTests DISCOVERY_TIMEOUT 60)
+    endif()
 endif()
 
 # Developer tool: plays a test tone through the platform device.
-if(UNAUDIO_BUILD_TESTS AND NOT UNA_APPLE_MOBILE AND NOT ANDROID)
+if(UNAUDIO_BUILD_TESTS)
     add_executable(una_device_probe Tests/device_probe.cpp)
     target_link_libraries(una_device_probe PRIVATE unaudio_core)
     # Mixer throughput benchmark (manual device).
