@@ -115,11 +115,12 @@ void SetCurrentThreadRole(ThreadRole role) {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     }
 #elif defined(__APPLE__)
-    if (role == ThreadRole::StreamService)
+    // The CoreAudio IO thread is already real-time and never passes through
+    // here; AudioRealtime comes from our own paced threads (the null device).
+    if (role == ThreadRole::AudioRealtime || role == ThreadRole::StreamService)
         pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     else if (role == ThreadRole::Decoder)
         pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
-    // AudioRealtime on Apple is the CoreAudio IO thread — already real-time.
 #else
     if (role == ThreadRole::AudioRealtime) {
         sched_param sp{};

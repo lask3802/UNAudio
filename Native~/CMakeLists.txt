@@ -118,7 +118,14 @@ if(UNA_APPLE_MOBILE)
     add_library(UNAudio STATIC ${UNA_API_SOURCES} ${UNA_CORE_SOURCES})
     target_include_directories(UNAudio PRIVATE Include Source)
     target_compile_definitions(UNAudio PRIVATE UNAUDIO_BUILDING)
-    target_compile_options(UNAudio PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+    # Same flags as unaudio_core; only the una_* API stays visible once Unity links us in.
+    target_compile_options(UNAudio PRIVATE -Wall -Wextra -Wno-unused-parameter $<$<CONFIG:Release>:-O3>
+        $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+    set_target_properties(UNAudio PROPERTIES
+        C_VISIBILITY_PRESET hidden
+        CXX_VISIBILITY_PRESET hidden
+        OBJCXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
 else()
     add_library(UNAudio SHARED ${UNA_API_SOURCES})
     target_link_libraries(UNAudio PRIVATE unaudio_core)
