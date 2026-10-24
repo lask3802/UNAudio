@@ -4,9 +4,9 @@
 
 | 平台 | Backend | 編譯 | 自動化測試 | 實機 | 備註 |
 |---|---|---|---|---|---|
-| Windows x64 | WASAPI（IAudioClient3、shared / exclusive、event-driven、MMCSS "Pro Audio"、預設裝置切換） | ✅ MSVC 19.5x，SSE2 與純量（`UNAUDIO_SIMD=OFF`）兩種 | ✅ 93 gtest + 28 Unity EditMode | ✅ shared 與 exclusive | 熱插拔只用模擬通知測過 |
+| Windows x64 | WASAPI（IAudioClient3、shared / exclusive、event-driven、MMCSS "Pro Audio"、預設裝置切換） | ✅ MSVC 19.5x，SSE2 與純量（`UNAUDIO_SIMD=OFF`）兩種 | ✅ 93 gtest + 32 Unity EditMode | ✅ shared 與 exclusive | 熱插拔只用模擬通知測過 |
 | Linux x64 | ALSA（blocking writei、xrun 恢復、裝置遺失重開） | ✅ GCC 13（Docker） | ✅ ASan、TSan 都沒有任何報告；少數依賴即時速度的測試在 sanitizer 減速下不成立（見下方） | ❌ | 容器內沒有音效卡 |
-| macOS arm64 / x86_64 | CoreAudio AUHAL | ✅ Apple Clang（Mac mini M4），NEON 與 SSE2（Rosetta），0 warning | ✅ 兩種架構 gtest 全過；Unity EditMode 28/28 | ✅ M4 內建輸出：64-frame buffer，輸出延遲 7.4 ms | universal dylib |
+| macOS arm64 / x86_64 | CoreAudio AUHAL | ✅ Apple Clang（Mac mini M4），NEON 與 SSE2（Rosetta），0 warning | ✅ 兩種架構 gtest 全過；Unity EditMode 32/32 | ✅ M4 內建輸出：64-frame buffer，輸出延遲 7.4 ms | universal dylib |
 | iOS | CoreAudio RemoteIO + AVAudioSession | ✅ device（arm64）與 simulator | ✅ iOS 26.3 與 18.3 模擬器 gtest 全過 | ❌ | 靜態函式庫（`__Internal`）；不修改 AVAudioSession category |
 | tvOS / visionOS | 同 iOS | ⚠️ 未編譯 | ❌ | ❌ | C# 端已用 `__Internal` |
 | Android arm64-v8a / armeabi-v7a / x86_64 | Oboe 1.9.3（AAudio，舊裝置退回 OpenSL ES） | ✅ NDK r27，三個 ABI 0 diagnostics，只匯出 `una_` 符號 | ✅ 模擬器（Pixel XL，API 31）：x86_64 原生與 arm64（ARM 轉譯）gtest 全過；AAudio 與 OpenSL ES 實際輸出、suspend / resume、Unity IL2CPP APK 從 AssetBundle 載入播放 | ❌ | 模擬器不給 FAST / MMAP，低延遲路徑只在實機上才會走到 |

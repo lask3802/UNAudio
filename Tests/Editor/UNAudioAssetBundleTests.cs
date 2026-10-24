@@ -12,12 +12,13 @@ namespace UNAudio.Tests
     /// <summary>
     /// End to end: .ogg → UNAudio importer → AssetBundle on disk → source asset deleted →
     /// bundle loaded → clip decoded natively from the bundle's TextAsset → sample-exact
-    /// playback and timing.
+    /// playback and timing. The bundle also carries a plain .bytes TextAsset holding an MP3.
     /// </summary>
     public class UNAudioAssetBundleTests
     {
         const string AssetDir = "Assets/__UNAudioBundleTest";
         const string AssetPath = AssetDir + "/tone.ogg";
+        const string BytesPath = AssetDir + "/shot.bytes";
         const string BundleDir = "Temp/UNAudioBundleTest";
         const string BundleName = "unaudio_test";
 
@@ -42,8 +43,13 @@ namespace UNAudio.Tests
             Assert.AreEqual(3.0, asset.Length, 1e-6);
             Assert.AreEqual(ToneBytes().Length, asset.Data.dataSize, "bytes must be stored untouched");
 
+            // No importer override: Unity imports .bytes as a TextAsset.
+            File.WriteAllBytes(BytesPath, File.ReadAllBytes(Path.GetFullPath(FixtureDir + "/mp3_44k_stereo_cbr.bytes")));
+            AssetDatabase.ImportAsset(BytesPath, ImportAssetOptions.ForceSynchronousImport);
+            Assert.IsNotNull(AssetDatabase.LoadAssetAtPath<TextAsset>(BytesPath));
+
             Directory.CreateDirectory(BundleDir);
-            var builds = new[] { new AssetBundleBuild { assetBundleName = BundleName, assetNames = new[] { AssetPath } } };
+            var builds = new[] { new AssetBundleBuild { assetBundleName = BundleName, assetNames = new[] { AssetPath, BytesPath } } };
             var manifest = BuildPipeline.BuildAssetBundles(BundleDir, builds,
                 BuildAssetBundleOptions.ForceRebuildAssetBundle | BuildAssetBundleOptions.ChunkBasedCompression,
                 EditorUserBuildSettings.activeBuildTarget);
@@ -92,6 +98,40 @@ namespace UNAudio.Tests
             Assert.AreEqual(96000.0, t.AudibleFrame, 1e-3);
             Assert.AreEqual(2.0, t.AudibleSeconds, 1e-7);
             clip.Dispose();
+        }
+
+        [UnityTest]
+        public IEnumerator PlainBytesTextAssetFromBundle()
+        {
+            StartManual();
+            // Async, decode mode: a 2 s, 44.1 kHz MP3 resampled to the 48 kHz device.
+            var task = UNAudioAssetBundles.LoadClipAsync(m_Bundle, "shot");
+            yield return Wait(() => task.IsCompleted);
+            Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
+            var clip = task.Result;
+            Assert.AreEqual("shot", clip.Name);
+            Assert.AreEqual(2, clip.Channels);
+            Assert.AreEqual(48000, clip.SampleRate);
+            Assert.AreEqual(2.0, clip.Length, 1e-3);
+            var voice = clip.PlayScheduled(256);
+            float[] o = Render(256 + 9600);
+            Assert.Greater(Rms(o, 0, 256, 256 + 9600), 0.01);
+            voice.Stop();
+            clip.Dispose();
+
+            // Sync, stream mode reading the bundle's memory in place.
+            var streamed = UNAudioAssetBundles.LoadClip(m_Bundle, "shot",
+                new UNAudioLoadOptions { mode = UNAudioLoadMode.Stream, borrow = true });
+            yield return Wait(() => streamed.IsReady || streamed.IsFailed);
+            Assert.IsTrue(streamed.IsReady);
+            Assert.IsFalse(streamed.IsSourceReleased);
+            voice = streamed.PlayScheduled(256);
+            System.Threading.Thread.Sleep(200);  // a stream voice primes on the stream thread
+            o = Render(256 + 9600);
+            Assert.Greater(Rms(o, 0, 256, 256 + 9600), 0.01);
+            Assert.AreEqual(UNAudioResult.Ok, voice.Error);
+            voice.Stop();
+            streamed.Dispose();
         }
 
         [UnityTest]

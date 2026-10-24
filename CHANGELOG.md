@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Verified
 
-- macOS (M4, arm64 NEON and x86_64 under Rosetta), iOS 26.3 / 18.3 simulators and the Android emulator (x86_64 native, arm64 under ARM translation), in addition to Windows and Linux (ASan, TSan); Unity EditMode on Windows and macOS; a Unity Android player on the emulator. 93 native tests, 28 Unity EditMode tests.
+- macOS (M4, arm64 NEON and x86_64 under Rosetta), iOS 26.3 / 18.3 simulators and the Android emulator (x86_64 native, arm64 under ARM translation), in addition to Windows and Linux (ASan, TSan); Unity EditMode on Windows and macOS; a Unity Android player on the emulator. 93 native tests, 32 Unity EditMode tests.
 
 ## [2.0.0] - 2026-10-24
 

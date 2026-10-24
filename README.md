@@ -68,6 +68,18 @@ clip.Play();
 
 Bundle 裡可以是 `UNAudioAsset`，也可以是單純的 `.bytes` TextAsset（內容是 OGG / MP3 / FLAC / WAV）。資料路徑是 bundle 的原生記憶體 → `una_clip_load_memory`，中間沒有 managed 複製。`UNAudioLoadOptions.borrow = true` 連 native 那一次 memcpy 都省掉，但 bundle 要保留到 `clip.IsSourceReleased`（解碼模式在解碼完成時，串流模式在 clip 釋放時）。
 
+## 載入來源一覽
+
+所有入口都回傳 `UNAudioClip`，之後的播放、排程、時間 API 完全相同；格式一律依內容判斷，四種格式都能用 Decode 或 Stream 模式。
+
+| 來源 | API | 備註 |
+|---|---|---|
+| 匯入成 `UNAudioAsset` 的資產（場景參照、Resources、Addressables、bundle 皆可） | `asset.Clip` / `asset.LoadAsync()` / `asset.Play()`（共用 clip）、`asset.Load(options)`（獨立 clip） | 可勾 Preload Audio Data；`UNAudioPlayer` 元件也吃這個 |
+| AssetBundle 裡的 `UNAudioAsset` 或純 `.bytes` TextAsset | `UNAudioAssetBundles.LoadClipAsync(bundle, name)`、`LoadClip(bundle, name)`；整包 `PreloadAsync(bundle)` | `PreloadAsync` 只處理 `UNAudioAsset` |
+| 任何 TextAsset | `UNAudioClip.Load(textAsset)` | 讀原生記憶體，沒有 managed 複製 |
+| 獨立檔案（下載快取、使用者檔案、persistentDataPath） | `UNAudioClip.LoadFile(path)` | native worker 讀檔；Android 的 StreamingAssets 在 APK 裡，不是一般路徑，改用下一列 |
+| 記憶體中的資料（`UnityWebRequest`、自己的封包格式） | `UNAudioClip.Load(NativeArray<byte>)`、`Load(byte[])`、`Load(ReadOnlySpan<byte>)` | `byte[]` 搭配 borrow 時會 pin 住 |
+
 ## Preload 與串流錯誤
 
 匯入設定勾 **Preload Audio Data** 的資產，一載入（場景參照、Resources、AssetBundle）就在引擎初始化後的下一幀開始解碼共用的 `asset.Clip`；它不會自己初始化引擎，要在載入畫面就開始，請在啟動流程先呼叫 `UNAudioEngine.Initialize(config)`（或用預設設定的 `EnsureInitialized()`）。整個 bundle 可以用 `await UNAudioAssetBundles.PreloadAsync(bundle)` 一次等完。
@@ -136,7 +148,7 @@ cmake -S Native~ -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHI
 ## 測試
 
 - Native：`Native~/Tests`，93 個 gtest，涵蓋解碼（Vorbis 對照 libvorbis，MP3 / FLAC 對照 ffmpeg）、樣本精準 seek、SIMD 與純量結果一致、重取樣、時鐘 DLL、樣本精準排程、串流與串流錯誤、壓力測試與 review 找到的問題的回歸測試。Windows、macOS（arm64 / x86_64）、iOS 模擬器、Android 模擬器全過；Linux 上另外用 ASan 與 TSan 跑過，沒有任何 sanitizer 報告（少數依賴即時速度的測試在 sanitizer 減速下不成立，見[平台相容性](Documentation/PlatformCompatibility.md)）。
-- Unity：`Tests/Editor`，28 個 EditMode 測試，包含「匯入 → 建 AssetBundle → 刪除原始資產 → 從 bundle 載入 → 解碼 → 樣本精準播放」的完整流程、MP3 / FLAC 匯入與播放、preload 與串流錯誤事件。在專案的 `Packages/manifest.json` 加上 `"testables": ["com.lask3802.unaudio"]` 後用 Test Runner 執行。
+- Unity：`Tests/Editor`，32 個 EditMode 測試，包含「匯入 → 建 AssetBundle → 刪除原始資產 → 從 bundle 載入 → 解碼 → 樣本精準播放」的完整流程、bundle 裡的純 `.bytes` TextAsset、`LoadFile` 讀獨立檔案、MP3 / FLAC 匯入與播放、preload 與串流錯誤事件。在專案的 `Packages/manifest.json` 加上 `"testables": ["com.lask3802.unaudio"]` 後用 Test Runner 執行。
 
 ## 文件
 
